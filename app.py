@@ -30,6 +30,12 @@ API_KEY = _secret("GEMINI_API_KEY")
 MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
 
 st.markdown(CSS, unsafe_allow_html=True)
+# the theme goes first on every run, before any search work, so it stays applied while results load and after.
+# It is also kept in the URL (?theme=dark), so it survives a browser refresh.
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = st.query_params.get("theme") == "dark"
+if st.session_state.get("dark_mode"):
+    st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ state
 S = st.session_state
@@ -515,16 +521,19 @@ if go and q.strip():
     run_search(q.strip())
     go_tab(TABS[0])
 
-S.setdefault("dark_mode", False)
-if S.dark_mode:
-    st.markdown(DARK_CSS, unsafe_allow_html=True)
 n1, n2, n3, n4 = st.columns([5.6, 1.2, 1.1, 0.75], vertical_alignment="center")
 with n1:
     st.segmented_control("Section", TABS, key="tab", on_change=_tab_changed, label_visibility="collapsed")
 n2.button("🏠 All products", use_container_width=True, key="home_top", on_click=go_home)
 n3.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top", on_click=open_cart)
+def _toggle_theme():
+    S.dark_mode = not S.dark_mode
+    if S.dark_mode: st.query_params["theme"] = "dark"
+    else: st.query_params.pop("theme", None)
+
+
 n4.button("☀️ Light" if S.dark_mode else "🌙 Dark", use_container_width=True, key="theme_top",
-          help="Switch between light and dark mode", on_click=lambda: S.__setitem__("dark_mode", not S.dark_mode))
+          help="Switch between light and dark mode", on_click=_toggle_theme)
 
 # ------------------------------------------------------------------ test cases (scripted personas)
 TEST_CASES = [
