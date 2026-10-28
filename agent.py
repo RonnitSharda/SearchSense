@@ -3,7 +3,7 @@ import json, re, time, difflib, zlib, collections
 import numpy as np
 import requests
 from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
-                     WEATHER, OCCASION_RULES)
+                     WEATHER, OCCASION_RULES, MONTHS, WARM, WARM_LAYERS, weather)
 import base64
 from prompt import NEEDS, build_system_prompt, build_response_schema, build_label_prompt
 
@@ -24,7 +24,9 @@ _STATIC_VOCAB = _DEMO_TOKENS | set("""for a an the in and or with under below ab
  under rs inr high waist straight wear outfit ethnic western oily acne prone skin fragrance free sits
  well sunscreen minimal reading corner small warm light lamp table jewelry jewellery something look
  humid breathable daytime pastel sangeet haldi brunch moisturizer moisturiser chanderi
- gym running run workout yoga sports sport training jogging trek trekking hiking travel beach swimming cycling""".split())   # hand-written words win spelling ties
+ gym running run workout yoga sports sport training jogging trek trekking hiking travel beach swimming cycling
+ i im my me want need needs looking show find buy clothes clothing trip trips vacation holiday holidays tour visit visiting
+ winter summer cold hot rainy monsoon chilly cool weather layers""".split()) | set(MONTHS) | set(WEATHER)   # hand-written words win spelling ties
 VOCAB = {w for w, n in _TOKEN_FREQ.items() if n >= 3} | _STATIC_VOCAB
 # spelling candidates are bucketed by first letter so correction stays fast with thousands of words
 _VOCAB_BY_FIRST = collections.defaultdict(list)
@@ -204,7 +206,7 @@ def _compact_previous(prev):
     if not prev: return ""
     out = {}
     for sec in ("hard", "soft"):
-        d = {k: v for k, v in (prev.get(sec) or {}).items() if v not in (None, [], "", False) and k != "prefer_colour_family"}
+        d = {k: v for k, v in (prev.get(sec) or {}).items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "prefer_types", "climate")}
         if d: out[sec] = d
     return f"[Previous search constraints: {json.dumps(out, ensure_ascii=False)}] " if out else ""
 
@@ -239,7 +241,8 @@ _OCCASION_WORDS = [  # (regex, occasion, time) - mirrors the vocabulary table in
     (r"\b(sangeet|cocktail)\b", "wedding", "evening"), (r"\b(mehendi|mehndi|haldi)\b", "haldi", "day"),
     (r"\b(shaadi|wedding|reception|engagement)\b", "wedding", None), (r"\b(diwali|eid|puja|pooja|festival|navratri|festive)\b", "festive", None),
     (r"\b(office|work|meeting|formal)\b", "office", None), (r"\b(date night|club|night out|party)\b", "party", "evening"),
-    (r"\b(gym|running|run|workout|yoga|sports?|training|jogging|cycling)\b", "sports", None), (r"\bbrunch\b", "brunch", "day"), (r"\b(casual|everyday)\b", "casual", None), (r"\bhome\b", "home", None)]
+    (r"\b(gym|running|run|workout|yoga|sports?|training|jogging|cycling)\b", "sports", None), (r"\bbrunch\b", "brunch", "day"), (r"\b(casual|everyday)\b", "casual", None),
+    (r"\b(trips?|travel|vacation|holidays?|tour)\b", "casual", None), (r"\bhome\b", "home", None)]
 _NEED_PATTERNS = [(r"\boily\b|oil[- ]free", "oily"), (r"\bdry\b", "dry"), (r"\bacne|comedogenic|pimple", "acne"),
                   (r"fragrance[- ]free|no (perfume|fragrance)|unscented", "fragrance-free"), (r"sunscreen|\bspf\b", "sunscreen"),
                   (r"warm light|cosy|cozy", "warm light"), (r"\bsmall\b|compact", "small")]
@@ -267,7 +270,8 @@ def rule_parse(query, history=None):
     newq = strip(correct_tokens(query)[0].lower())
     q = (strip(history[-1].lower()) + " " + newq) if history else newq   # a follow-up refines the previous search only
     hard = dict(category=None, gender=None, budget_min=None, budget_max=None, size=None, types=[], style=None)
-    soft = dict(occasion=None, time=None, city=None, colour_family=[], colours=[], fabrics=[], fabric_named=False, pairs=None, needs=[])
+    soft = dict(occasion=None, time=None, city=None, month=None, colour_family=[], colours=[], fabrics=[], fabric_named=False,
+                pairs=None, needs=[])
     maps = []
     hard["budget_min"], hard["budget_max"] = _budget(newq if re.search(r"\d", newq) else q)
     if any(w in q for w in ["lamp", "cushion", "decor", "curtain", "mug", "bedsheet"]): hard["category"] = "lifestyle"
@@ -295,6 +299,7 @@ def rule_parse(query, history=None):
     if "evening" in q or "night" in q: soft["time"] = "evening"
     for c in WEATHER:
         if c in q: soft["city"] = c
+    soft["month"] = next((m for m in MONTHS if re.search(rf"\b{m[:3]}(?:{m[3:]})?\b", q)), None)
     for cf in ALLOWED["colour_family"]:
         if cf in q: soft["colour_family"].append(cf)
     # named colours (from the new message only; "silver jewellery" is a pairing, not a colour)
@@ -427,6 +432,7 @@ def validate_intent(intent):
         notes.append(f"needs {s['needs']} → dropped (not checkable on fashion)"); s["needs"] = []
     s["fabric_named"] = bool(s.get("fabric_named"))
     s["city"] = (s.get("city") or None) and str(s["city"]).lower()
+    s["month"] = _month(s.get("month"))
     it["hard"], it["soft"] = h, s
 
     try:
@@ -474,8 +480,17 @@ def understand(query, api_key, models, history=None, previous=None):
 
 
 # ------------------------------------------------------------------ tools
-def weather_tool(city):
-    return WEATHER.get((city or "").lower())
+def _month(v):
+    """'January', 'jan', 1 -> 'january'; anything else -> None."""
+    v = str(v or "").strip().lower()
+    if v.isdigit() and 1 <= int(v) <= 12: return MONTHS[int(v) - 1]
+    return next((m for m in MONTHS if v and (v == m or v == m[:3])), None)
+
+
+def weather_tool(city, month=None):
+    """Typical weather for the city in the month of the trip or event (this month if none was given)."""
+    m = _month(month)
+    return weather(city, MONTHS.index(m) + 1 if m else None)
 
 
 def occasion_tool(occasion, time_):
@@ -487,11 +502,20 @@ def enrich(intent):
     """Context tools: weather + occasion rules add soft preferences."""
     soft = intent.setdefault("soft", {})
     calls = []
-    w = weather_tool(soft.get("city"))
+    w = weather_tool(soft.get("city"), soft.get("month"))
     if soft.get("city"):
-        calls.append(("weather_tool", f"city={soft['city']}", f"{w['note']}, {w['temp']}" if w else "no data"))
-    if w and w["climate"] == "humid":
-        soft["fabrics"] = sorted(set(soft.get("fabrics") or []) | BREATHABLE)
+        when = soft.get("month") or "this month"
+        calls.append(("weather_tool", f"city={soft['city']}, month={when}",
+                      f"{w['note']}, {w['temp']} in {w['month']}" if w else "no data"))
+    soft["climate"] = w["climate"] if w else None
+    clothes = intent.get("hard", {}).get("category") in (None, "fashion")
+    if w and w["climate"] in ("humid", "hot") and not soft.get("fabric_named"):
+        soft["fabrics"] = sorted(set(soft.get("fabrics") or []) - WARM | BREATHABLE)
+    if w and w["climate"] in ("cold", "cool") and clothes:
+        if not soft.get("fabric_named"):   # warm fabrics replace any 'breathable' guess
+            soft["fabrics"] = sorted(set(soft.get("fabrics") or []) - BREATHABLE | WARM)
+        if not intent.get("hard", {}).get("types"):   # no product named: warm layers rank first, nothing is filtered out
+            soft["prefer_types"] = WARM_LAYERS
     occ = occasion_tool(soft.get("occasion"), soft.get("time"))
     if soft.get("occasion"):
         calls.append(("occasion_rules", f"{soft.get('occasion')}, {soft.get('time') or 'day'}", occ["tip"] if occ else "no rule"))
@@ -678,6 +702,7 @@ def search(intent, min_results=2, max_results=6):
     base = _hard_mask(h)
     exact = None
     prefer = _isin(_CFAM, _CFAM_M, s.get("prefer_colour_family") or [])
+    prefer_t = _isin(_TYP, _TYP_M, s.get("prefer_types") or [])
     for attempt in range(len(RELAX_ORDER) + 1):
         ok = _all(_soft_masks(s), base)
         n_scored = int(ok.sum())
@@ -699,7 +724,7 @@ def search(intent, min_results=2, max_results=6):
         trace.append(f"Verifier: too few matches, relaxed '{pick}' and searched again")
     # listings that only pass because their fabric is unknown rank below ones that state a matching fabric
     unknown = (_FAB == _FAB_M.get("", -1)) * 0.3 if s.get("fabrics") and not s.get("fabric_named") else 0
-    score = _RATING + prefer * 0.5 + _JITTER - unknown
+    score = _RATING + prefer * 0.5 + prefer_t * 1.0 + _JITTER - unknown
     if relaxed:
         n_exact = int(exact.sum())
         score = score + exact * 2.0   # exact matches always rank above the close options added by relaxing
@@ -1001,8 +1026,11 @@ def keyword_search(query, max_results=8, gender=None, info=None):
 def why_this(p, intent):
     s = intent.get("soft", {})
     bits = []
-    if p["fabric"] in BREATHABLE and (s.get("fabrics") or s.get("city")):
+    if p["fabric"] in BREATHABLE and (s.get("fabrics") or s.get("city")) and s.get("climate") not in ("cold", "cool"):
         bits.append(f"breathable {p['fabric']}")
+    if s.get("climate") in ("cold", "cool") and (p["fabric"] in WARM or p["type"] in WARM_LAYERS):
+        where = (s.get("city") or "").title() + (f" in {s['month'].title()}" if s.get("month") else "")
+        bits.append(f"warm {p['fabric'] or p['type']}" + (f" for {where.strip()}" if where.strip() else ""))
     if s.get("colours") and _colour_ok(p, s["colours"]):
         bits.append(f"in {p['colour']}")
     if s.get("colour_family") and p["colour_family"] in s["colour_family"]:

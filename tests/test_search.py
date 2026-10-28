@@ -151,6 +151,20 @@ def test_vectorised_search_matches_reference():
         assert (soft == np.array([r and all(c[1] is not False for c in A.check_soft(p, s)) for r, p in zip(ref, A._PL)])).all(), s
 
 
+def test_weather_depends_on_month():
+    # Jaipur is cold in January and hot in May: the weather tool must use the trip's month, not one fixed temperature
+    assert A.weather_tool("jaipur", "jan")["climate"] == "cold" and A.weather_tool("jaipur", "may")["climate"] == "hot"
+    assert A.correct_tokens("I want clothes for my Jaipur trip in January")[1] == []   # everyday words are not "fixed"
+    jan = A.rule_parse("I want clothes for my Jaipur trip in January")
+    assert jan["soft"]["month"] == "january" and jan["soft"]["occasion"] == "casual"   # a trip is casual, not brunch
+    jan, _ = A.enrich(jan)
+    assert {"wool", "fleece"} <= set(jan["soft"]["fabrics"]) and not set(jan["soft"]["fabrics"]) & {"linen", "cotton"}
+    top = [p["type"] for p, _ in A.search(jan, max_results=8)[0]]
+    assert top and all(t in ("jacket", "sweater", "sweatshirt", "blazer") for t in top[:4]), top
+    may, _ = A.enrich(A.rule_parse("clothes for my Jaipur trip in May"))
+    assert "linen" in may["soft"]["fabrics"] and not may["soft"].get("prefer_types")
+
+
 def test_fast():
     t = time.time()
     for q in ["breathable pastel ethnic outfit for a humid daytime wedding under 6000", "outfit for a wedding", "jeans for office"]:

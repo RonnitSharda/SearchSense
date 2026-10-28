@@ -33,7 +33,10 @@ VOCAB_RULES = [
     ("Diwali, Eid, puja, pooja, festival, Navratri", "occasion festive"),
     ("office, work, meeting, formal", "occasion office"),
     ("date night, club, night out", "occasion party, time evening"),
-    ("brunch, day out, vacation, holiday", "occasion brunch or casual, time day"),
+    ("brunch, day out", "occasion brunch, time day"),
+    ("trip, travel, vacation, holiday, tour, visiting <city>", "occasion casual (never brunch); city and month if given: the weather tool "
+     "then decides warm layers or breathable fabrics"),
+    ("in January, Jan, this December, during Diwali month", "month (lowercase full name). 'winter' / 'summer' alone: use the fabric rows below"),
     ("gym, running, jogging, workout, training, yoga, sports, cycling",
      "occasion sports; fabrics polyester, nylon, quick-dry (inferred: cotton holds sweat). 'quick-dry' is the catalog's value for "
      "performance fabrics sold by technology name (dri-fit, rapid-dry). Track pants / joggers -> type trousers"),
@@ -70,6 +73,14 @@ EXAMPLES = [
                "fabrics": ["cotton", "linen", "mul cotton", "khadi", "rayon"], "fabric_named": False, "pairs": None, "needs": []},
       "mappings": [{"phrase": "breathable", "maps_to": "fabrics: cotton, linen, mul cotton, khadi, rayon"},
                    {"phrase": "haldi", "maps_to": "occasion haldi, daytime"}],
+      "clarify": None}),
+    ("I want clothes for my Jaipur trip in January",
+     {"stage": 3, "interpretation": "Warm clothes for a cold January trip to Jaipur",
+      "hard": {"category": "fashion", "gender": None, "budget_min": None, "budget_max": None, "size": None, "types": [], "style": None},
+      "soft": {"occasion": "casual", "time": None, "city": "jaipur", "month": "january", "colour_family": [], "colours": [],
+               "fabrics": ["wool", "fleece", "velvet"], "fabric_named": False, "pairs": None, "needs": []},
+      "mappings": [{"phrase": "Jaipur trip in January", "maps_to": "city jaipur, month january: cold winter, so warm fabrics and layers"},
+                   {"phrase": "trip", "maps_to": "occasion casual"}],
       "clarify": None}),
     ("Vlue kurta",
      {"spelling": [{"typed": "Vlue", "meant": "blue"}], "stage": 2, "interpretation": "Blue kurta",
@@ -149,6 +160,8 @@ EXAMPLES = [
 
 def _with_type(a):
     """Examples default to a product search; query_type and reply are listed first, as the model should decide them first."""
+    if "soft" in a and "month" not in a["soft"]:   # every example spells out month, right after city
+        a = dict(a, soft={k2: v2 for k, v in a["soft"].items() for k2, v2 in ([(k, v), ("month", None)] if k == "city" else [(k, v)])})
     return {"query_type": a.get("query_type", "product_search"), "reply": a.get("reply"), "confidence": a.get("confidence", "high"),
             "spelling": a.get("spelling", []),
             **{k: v for k, v in a.items() if k not in ("query_type", "reply", "confidence", "spelling")}}
@@ -237,6 +250,10 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
   - occasion: one of {allowed['occasion']} or null.
   - time: day / evening / any or null.
   - city: lowercase city name if mentioned (a weather tool looks it up), else null.
+  - month: the month of the trip or event as a lowercase full name ("in Jan" -> "january"), else null. The weather tool
+    uses city + month, so don't guess the climate yourself: Jaipur or Delhi in December-February is cold (warm layers),
+    the same cities in May are hot. If the month makes the weather clear on its own ("Jaipur in January"), you may also add
+    the matching inferred fabrics (winter -> wool, fleece, velvet).
   - colour_family: subset of {allowed['colour_family']} for vague colour words.
   - colours: specific colours the shopper named (e.g. "lilac", "navy", "mustard"), lowercase. Known colour words: {', '.join(colour_words)}.
     If the shopper names a specific colour, put it here and leave colour_family empty.
@@ -321,13 +338,15 @@ def build_response_schema(allowed):
                 "occasion": _str(allowed["occasion"], nullable=True),
                 "time": _str(allowed["time"], nullable=True),
                 "city": _str(nullable=True),
+                "month": _str(["january", "february", "march", "april", "may", "june", "july", "august", "september",
+                               "october", "november", "december"], nullable=True),
                 "colour_family": arr(_str(allowed["colour_family"])),
                 "colours": arr(_str()),
                 "fabrics": arr(_str(allowed["fabrics"])),
                 "fabric_named": {"type": "BOOLEAN"},
                 "pairs": _str(["silver", "gold"], nullable=True),
                 "needs": arr(_str(list(NEEDS)))},
-                "required": ["occasion", "time", "city", "colour_family", "colours", "fabrics", "fabric_named", "pairs", "needs"]},
+                "required": ["occasion", "time", "city", "month", "colour_family", "colours", "fabrics", "fabric_named", "pairs", "needs"]},
             "mappings": arr({"type": "OBJECT", "properties": {"phrase": _str(), "maps_to": _str()}, "required": ["phrase", "maps_to"]}),
             "clarify": {"type": "OBJECT", "nullable": True, "properties": {"question": _str(), "options": arr(_str())},
                         "required": ["question", "options"]},

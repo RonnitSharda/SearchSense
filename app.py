@@ -958,7 +958,7 @@ def agent_steps(res, products, relaxed=None, removed=()):
     it = res["intent"]
     h, s = it.get("hard", {}), it.get("soft", {})
     nh = sum(1 for k, v in h.items() if v not in (None, [], ""))
-    ns = sum(1 for k, v in s.items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "fabric_named"))
+    ns = sum(1 for k, v in s.items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "prefer_types", "climate", "fabric_named"))
     model = res.get("model", "")
     memory = " · used previous search" if any("previous search" in o for o in find("Intent & constraints")) else ""
     fixes = find("Validator")
