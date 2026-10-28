@@ -46,7 +46,7 @@ S.setdefault("result", None)
 S.setdefault("pid", None)
 S.setdefault("removed_chips", [])
 S.setdefault("last_results", [])
-TABS = ["🏠 Shop", "🧪 Test cases", "🧠 AI trace", "📊 Metrics"]
+TABS = ["🏠 Shop", "📖 Tutorial", "🧪 Test cases", "🧠 AI trace", "📊 Metrics"]
 S.setdefault("tab", TABS[0])
 S.setdefault("last_tab", TABS[0])
 S.setdefault("home_n", 24)
@@ -604,6 +604,90 @@ def view_tests():
                             f'<div class="tc-l">Expected</div><div class="tc-t">{html.escape(case["expect"])}</div>', unsafe_allow_html=True)
                 st.button("Run test", key="tc" + case["name"], use_container_width=True, type="primary", on_click=run_case, args=(case,))
 
+# ------------------------------------------------------------------ tutorial (guided tour for first-time users)
+TUTORIAL = [
+    dict(icon="👤", title="Pick who is shopping", profile="Priya", home=True, button="Shop as Priya",
+         do="Choose a shopper from the Profile menu in the left sidebar. Priya, Ananya and Rohan come with past orders; "
+            "➕ New profile adds your own.",
+         look="The home page opens with “Picked for Priya”, based on her orders and what she browses. A men's profile only sees men's fashion."),
+    dict(icon="💬", title="Search in your own words", profile="Priya", query="breathable pastel kurta for haldi under 2500",
+         do="Describe what you need the way you'd say it to a friend: occasion, colour, budget, fabric.",
+         look="The reasoning bubble (You typed / I understood / So I'm showing), the Gender · Item · Colour chips "
+              "(tap one to remove it), and the Best match ribbon on the top result."),
+    dict(icon="✏️", title="Don't worry about typos", query="Vlue kurta",
+         do="Type quickly, spelling mistakes and all. Short forms like “sari” or “tshirt” work too.",
+         look="It searches for blue kurta and tells you. Tap “Search instead for …” to use your exact words."),
+    dict(icon="❓", title="Answer one quick question", query="outfit for a wedding",
+         do="Try something vague, where the answer could go two very different ways.",
+         look="One question with tap-to-answer options (Ethnic, Western or Show both). Tap one and the results update."),
+    dict(icon="🔁", title="Keep the conversation going", profile="Priya", setup="breathable pastel kurta for haldi under 2500",
+         query="#2 but cheaper",
+         do="Refine your results with the follow-up bar under them: “in blue”, “less heavy”, “#2 but cheaper”.",
+         look="The app keeps what you already asked for and changes only what you said, here a lower budget than result #2."),
+    dict(icon="📏", title="Find your size", profile="Ananya", query="high-waist straight jeans for office",
+         do="Search for clothes as Ananya. She once returned jeans in 30 for being too small.",
+         look="A size badge on every card: “Take M” (sure), “34 recommended · runs small” (fairly sure, with the reason), "
+              "or “Not sure of your size” (no guess: check the size chart)."),
+    dict(icon="🛍️", title="Explore a product", profile="Ananya", query="high-waist straight jeans for office", open_top=True,
+         button="Open a product",
+         do="Open any product to see the full picture before you buy.",
+         look="Why this size, “Ask about this product” (preview) and “Complete the look”. Add two sizes to the cart to see the checkout size check."),
+    dict(icon="📦", title="Ask for help, not products", query="Return order",
+         do="Type an order or refund question into the same search bar.",
+         look="“This isn't a search query”: no products, just a hand-off to Customer Care or help chat."),
+    dict(icon="⚙️", title="Make it yours", home=True, button="Go to the home page",
+         do="In the sidebar: set your usual size and brand (type it in if it's not listed), upload a photo of a size tag or bill, "
+            "and open Past orders to “Shop similar”. 🌙 Dark in the top bar switches the theme.",
+         look="Size badges and “Picked for you” update as soon as your profile changes."),
+    dict(icon="🧠", title="See behind the scenes", tab=3, button="Open the AI trace",
+         do="After any search, open 🧠 AI trace to see every step the AI took. 📊 Metrics shows the success measures, "
+            "and 🧪 Test cases runs nine ready-made shoppers.",
+         look="How the request was understood, which checks ran, and what was relaxed when nothing matched exactly."),
+]
+S.setdefault("tut_done", set())
+
+
+def run_tutorial(i):
+    step = TUTORIAL[i]
+    S.tut_done.add(i)
+    if step.get("profile") in S.profiles:
+        S.active_profile = step["profile"]; S.profile = S.profiles[step["profile"]]
+    if step.get("tab"):
+        go_tab(TABS[step["tab"]]); return
+    if step.get("home"):
+        go_home(); return
+    S.history, S.last_results = [], []   # each step starts a fresh conversation
+    if step.get("setup"):
+        run_search(step["setup"])
+        run_search(step["query"], followup=True)
+    else:
+        run_search(step["query"])
+    S.q = step["query"]
+    if step.get("open_top") and S.last_results:
+        S.pid, S.view = S.last_results[0], "product"
+    go_tab(TABS[0])
+
+
+def view_tutorial():
+    done = len(S.tut_done)
+    st.markdown('<div class="tc-intro"><b>Tutorial</b> · a 2-minute tour of SearchSense. Each step tells you what to try and what to look for; '
+                '<b>▶ Try it</b> runs it for you in 🏠 Shop. Come back here for the next step.</div>', unsafe_allow_html=True)
+    st.progress(done / len(TUTORIAL), text=f"{done} of {len(TUTORIAL)} steps tried" + (" · you've seen it all 🎉" if done == len(TUTORIAL) else ""))
+    for r0 in range(0, len(TUTORIAL), 2):
+        cols = st.columns(2)
+        for c, (i, step) in zip(cols, list(enumerate(TUTORIAL))[r0:r0 + 2]):
+            with c, st.container(border=True):
+                q = f'<div class="tc-q">“{html.escape(step["query"])}”</div>' if step.get("query") else ""
+                if step.get("setup"):
+                    q = f'<div class="tc-q">1. “{html.escape(step["setup"])}”<br>2. “{html.escape(step["query"])}”</div>'
+                tick = '<span class="tut-done">✓ Tried</span>' if i in S.tut_done else ""
+                st.markdown(f'<span class="tcm"></span><div class="tc-head"><span class="tc-ic">{step["icon"]}</span>'
+                            f'<div><span class="tc-tag">Step {i + 1}</span>{tick}<div class="tc-name">{html.escape(step["title"])}</div></div></div>'
+                            f'<div class="tc-l">Do this</div><div class="tc-t">{html.escape(step["do"])}</div>{q}'
+                            f'<div class="tc-l">Look for</div><div class="tc-t">{html.escape(step["look"])}</div>', unsafe_allow_html=True)
+                st.button("▶ " + step.get("button", "Try it"), key=f"tut{i}", use_container_width=True,
+                          type="secondary" if i in S.tut_done else "primary", on_click=run_tutorial, args=(i,))
+
 # ------------------------------------------------------------------ metrics (solution doc: impact, KPIs)
 def view_metrics():
     m = S.metrics
@@ -749,7 +833,7 @@ def _reset_home():
 def view_home():
     st.markdown(f'<div class="hero"><div><div class="hero-t">Shop {len(PRODUCTS):,} products</div>'
                 '<div class="hero-s">Browse below, or describe what you need in the search bar: AI mode understands occasions, '
-                'weather, budget and fit. Not sure what to try? Open 🧪 Test cases.</div></div></div>', unsafe_allow_html=True)
+                'weather, budget and fit. New here? Take the 2-minute tour in 📖 Tutorial.</div></div></div>', unsafe_allow_html=True)
     prefs = profile_prefs(S.profile)
     if any(prefs[f] for f in prefs):
         ordered = {o["pid"] for o in S.profile.get("orders", [])}
@@ -961,7 +1045,7 @@ def view_search():
     rc1, rc2 = st.columns([6, 1.1], vertical_alignment="center")
     mode = {"agent": "✦ AI mode", "help": "Customer support", "keyword": "Quick search"}[res["kind"]]
     rc1.markdown(f'<div class="router">{pill(stage)}<span class="friendly">{mode} · {res["t"]:.1f}s</span></div>', unsafe_allow_html=True)
-    rc2.button("🧠 AI trace", use_container_width=True, key="open_trace", on_click=go_tab, args=(TABS[2],))
+    rc2.button("🧠 AI trace", use_container_width=True, key="open_trace", on_click=go_tab, args=(TABS[3],))
 
     # ---------------- not a search: support or something else
     if res["kind"] == "help":
@@ -1242,10 +1326,12 @@ def view_cart():
         st.balloons(); st.success("Order placed (demo). Fewer surprises, fewer returns.")
 
 if S.tab == TABS[1]:
-    view_tests()
+    view_tutorial()
 elif S.tab == TABS[2]:
-    view_trace()
+    view_tests()
 elif S.tab == TABS[3]:
+    view_trace()
+elif S.tab == TABS[4]:
     view_metrics()
 else:
     {"search": view_search, "product": view_product, "cart": view_cart}[S.view]()

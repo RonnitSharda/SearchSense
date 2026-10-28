@@ -12,7 +12,7 @@ section[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--li
 
 /* top bar */
 .ss-top{display:flex;align-items:center;justify-content:space-between;padding:4px 2px 14px}
-.ss-logo{font-weight:800;font-size:26px;letter-spacing:-.8px;color:var(--ink)}
+.ss-logo{font-weight:800;font-size:26px;letter-spacing:-.8px;color:var(--ink);white-space:nowrap}
 .ss-logo b{color:var(--pink)}
 .ss-tag{font-size:13px;color:var(--mute)}
 .ss-badge{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--pink);background:var(--pinkL);border-radius:20px;padding:4px 10px}
@@ -85,6 +85,7 @@ CARD .stButton button[kind="primary"]{background:var(--pink);color:#fff;border:0
 .tc-ic{font-size:26px;width:46px;height:46px;border-radius:12px;background:var(--pinkL);display:flex;align-items:center;justify-content:center}
 .tc-name{font-weight:800;font-size:16px;color:var(--ink)}
 .tc-tag{display:inline-block;font-size:11px;font-weight:700;color:var(--pink);background:var(--pinkL);border-radius:20px;padding:2px 9px;margin-top:2px}
+.tut-done{display:inline-block;font-size:11px;font-weight:700;color:#03A685;background:#E6F7F3;border-radius:20px;padding:2px 9px;margin-left:6px}
 .tc-q{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--bg);border-radius:8px;padding:8px 10px;color:var(--ink);margin:6px 0 8px;min-height:58px}
 .tc-l{font-size:10.5px;font-weight:800;letter-spacing:.8px;color:var(--mute);text-transform:uppercase;margin-top:6px}
 .tc-t{font-size:13px;color:#4A4E63;line-height:1.4;min-height:36px}

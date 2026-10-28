@@ -6,6 +6,7 @@ Agentic AI mode for an e-commerce search bar.
 
 ## Using the app
 - **🏠 Shop** opens on the full catalog (filter by department and type, sort by price, "Show more"). Search from the top bar: short queries use normal keyword search (with spelling fixes such as *sari → saree*), descriptive ones go to the AI agent.
+- **📖 Tutorial** is a 10-step guided tour for first-time users: each step says what to try and what to look for, and **▶ Try it** runs it in 🏠 Shop (switching profile or opening a product where needed). A progress bar tracks the steps tried.
 - **🧪 Test cases** has nine scripted shoppers (Rohan, Priya, Ananya, Ambiguous, No exact match, Lifestyle, Skincare, Order help, Follow-up). Each **Run test** button runs the case and opens the results.
 - After every search a **reasoning bubble** says *You typed → I understood → So I'm showing*, a **How I got here** strip walks
   through the agent loop from the solution doc (router → intent & constraints → clarifier → context tools → search & ranking →
