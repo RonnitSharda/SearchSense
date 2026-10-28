@@ -731,6 +731,28 @@ def query_gender(query):
     return None
 
 
+def keyword_filters(query, gender=None):
+    """What a short query asks for, as filters the shopper can see and remove: gender, item types, colours, size,
+    and any other catalog words (fabric, fit...). Each filter keeps the query words it came from."""
+    toks = _kw_tokens(query) - _KW_STOP
+    out = dict(gender=None, gender_from=None, types=[], colours=[], size=None, words=[])
+    g = query_gender(query)
+    out["gender"], out["gender_from"] = (g, "query") if g else ((gender, "profile") if gender in ("women", "men") else (None, None))
+    used = set()
+    for t in sorted(ALLOWED["types"], key=len, reverse=True):          # "kurta set" before "kurta"
+        tt = _kw_tokens(t)
+        if tt and tt <= toks and not tt <= used:
+            out["types"].append((t, sorted(tt))); used |= tt
+    for t in sorted(toks - used):
+        if t in COLOUR_SYNONYMS or t in COLOUR_WORDS:
+            out["colours"].append((t, [t])); used.add(t)
+    size = SIZE_RE.search(query)
+    if size: out["size"] = size.group(1).upper()
+    gender_words = {"men", "man", "women", "woman", "ladies", "gent", "boy", "girl", "her", "him"}
+    out["words"] = [t for t in sorted(toks - used - gender_words) if t in _KW_INDEX]
+    return out
+
+
 _KW_STOP = {"for", "the", "and", "with", "in", "of", "an", "to", "my", "me", "some", "size", "buy", "show", "want", "need", "new", "best"}
 
 

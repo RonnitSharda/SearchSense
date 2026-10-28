@@ -104,6 +104,30 @@ TOP{border:1.5px solid #FFB3C6!important}
 .helpbox{background:#F0F7FF;border:1px solid #CFE3FF;border-left:4px solid #3B82F6;border-radius:10px;padding:14px 18px;margin:6px 0 12px}
 .hb-t{font-size:17px;font-weight:800;color:var(--ink)}.hb-s{font-size:14px;color:#4A4E63;margin-top:4px}
 
+/* reasoning bubble: you typed -> I understood -> so I'm showing */
+.bubble{display:flex;gap:12px;background:#fff;border:1px solid #FFD6E0;border-radius:4px 16px 16px 16px;padding:12px 16px;margin:4px 0 10px;
+        box-shadow:0 2px 10px #FF3F6C14}
+.b-ic{flex:0 0 30px;height:30px;border-radius:50%;background:var(--pink);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}
+.b-body{flex:1}
+.b-row{display:flex;gap:10px;padding:3px 0;font-size:14px;line-height:1.45}
+.b-k{flex:0 0 112px;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--mute);padding-top:2px}
+.b-v{color:var(--ink)}.b-v b{color:var(--ink)}
+.b-why{font-size:12.5px;color:var(--mute);margin-top:2px}
+
+/* agent loop strip */
+.steps-h{font-size:11px;font-weight:800;letter-spacing:.8px;color:var(--mute);text-transform:uppercase;margin:2px 0 6px}
+.steps{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px}
+.st{flex:1 1 0;min-width:112px;border-radius:10px;padding:8px 10px;background:#fff;border:1px solid var(--line);position:relative}
+.st:not(:last-child)::after{content:"›";position:absolute;right:-8px;top:40%;font-size:16px;font-weight:800;color:#C4C5CA;z-index:1}
+.st-n{position:absolute;right:8px;top:6px;font-size:11px;font-weight:800;color:var(--mute)}
+.st-t{font-size:12.5px;font-weight:800;color:var(--ink);padding-right:14px}
+.st-d{font-size:11.5px;color:#4A4E63;line-height:1.35;margin-top:2px}
+.st-done{border-top:3px solid var(--pink)}
+.st-skip{border-top:3px solid #D4D5D9;background:#FAFAFB}.st-skip .st-t,.st-skip .st-d{color:#94969F}
+.st-relax{border-top:3px solid var(--amber);background:var(--amberL)}
+.st-ask{border-top:3px solid #3B82F6;background:#F0F7FF}
+.ask{background:#F0F7FF;border:1px solid #CFE3FF;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-size:14.5px}
+
 /* trace + risks */
 .step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
 .step b{color:var(--ink)}

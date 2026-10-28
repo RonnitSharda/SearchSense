@@ -7,6 +7,10 @@ Agentic AI mode for an e-commerce search bar.
 ## Using the app
 - **🏠 Shop** opens on the full catalog (filter by department and type, sort by price, "Show more"). Search from the top bar: short queries use normal keyword search (with spelling fixes such as *sari → saree*), descriptive ones go to the AI agent.
 - **🧪 Test cases** has nine scripted shoppers (Rohan, Priya, Ananya, Ambiguous, No exact match, Lifestyle, Skincare, Order help, Follow-up). Each **Run test** button runs the case and opens the results.
+- After every search a **reasoning bubble** says *You typed → I understood → So I'm showing*, a **How I got here** strip walks
+  through the agent loop from the solution doc (router → intent & constraints → clarifier → context tools → search & ranking →
+  verifier → fit layer, each marked done / skipped / asked / relaxed), and **Filters applied** lists every filter as a
+  removable chip (Gender: Men · Item: T-shirt · Colour: Yellow). Top results are marked Best match / Top pick.
 - **🧠 AI trace** shows every step of the last search: router decision, spelling fixes, model call, context tools, verifier attempts, a per-result constraint table and the structured intent. The sidebar toggle "Show agent trace" also shows a compact trace under the results.
 
 ## The agent's master prompt
