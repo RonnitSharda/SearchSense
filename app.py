@@ -27,7 +27,7 @@ def _secret(k, default=None):
         return os.environ.get(k, default)
 
 API_KEY = _secret("GEMINI_API_KEY")
-MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-lite-latest,gemini-flash-latest,gemini-2.5-flash").split(",") if m.strip()]
+MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
 
 st.markdown(CSS, unsafe_allow_html=True)
 

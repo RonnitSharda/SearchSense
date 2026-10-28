@@ -63,7 +63,7 @@ streamlit run app.py
 3. Open **Advanced settings → Secrets** and paste:
    ```
    GEMINI_API_KEY = "your-key-from-aistudio.google.com"
-   GEMINI_MODELS = "gemini-flash-lite-latest,gemini-flash-latest,gemini-2.5-flash"
+   GEMINI_MODELS = "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash"
    ```
 4. Deploy. Share the `*.streamlit.app` URL. Make sure the app's sharing is set to **public**.
 
