@@ -67,20 +67,73 @@ def test_followup_uses_previous_search_only():
     assert it["hard"]["category"] == "fashion" and it["hard"]["budget_max"] == 3298 and it["hard"]["style"] == "ethnic"
 
 
+def test_keyword_search_needs_every_word():
+    items = A.keyword_search("green t-shirt", 24)
+    assert items and all(p["type"] == "t-shirt" and any(w in p["colour"] for w in A.colour_targets("green")) for p in items)
+    men = A.keyword_search("t-shirt", 24, gender="men")
+    assert men and all(p["gender"] in ("men", "unisex") for p in men)
+
+
+def test_routing_support_and_purpose():
+    for q in ["Return Order", "where is my order", "refund not received", "cancel my order", "talk to an agent", "coupon not working"]:
+        assert A.route(q)["stage"] == 6, q
+    for q in ["track pants for men", "returnable kurta", "exchange offer saree", "green tshirt"]:
+        assert A.route(q)["stage"] != 6, q
+    for q in ["Tshirt for Gym & Runnig", "kurta for office", "hi", "iphone 15"]:
+        assert A.route(q)["stage"] == "agent", q
+    assert A.route("Tshirt for Gym & Runnig")["fixes"] == []          # "Gym" is no longer "corrected" to "gm"
+
+
+def test_validator_repairs_model_output():
+    it, notes = A.validate_intent({"query_type": "product_search", "stage": 3, "interpretation": "x",
+                                   "hard": {"category": "Fashion", "gender": "male", "types": ["tshirt", "gym wear"], "budget_max": "1,500"},
+                                   "soft": {"occasion": "gym", "fabrics": ["dri-fit"], "colours": ["greenish"], "needs": ["oily skin"]}})
+    assert it["hard"]["gender"] == "men" and it["hard"]["types"] == ["t-shirt"] and it["hard"]["budget_max"] == 1500
+    assert it["soft"]["occasion"] == "sports" and it["soft"]["fabrics"] == ["quick-dry"] and it["soft"]["colours"] == ["green"]
+    assert it["soft"]["needs"] == []   # skin needs dropped on a fashion search
+    sup, _ = A.validate_intent({"query_type": "support", "reply": "Taking you to Customer Care.", "stage": 3,
+                                "hard": {"types": ["kurta"]}, "soft": {"colours": ["red"]}})
+    assert sup["stage"] == 6 and sup["hard"]["types"] == [] and sup["soft"]["colours"] == [] and sup["reply"]
+
+
+def test_gym_finds_quick_dry_tees():
+    it = A.validate_intent({"query_type": "product_search", "stage": 3, "interpretation": "gym tee",
+                            "hard": {"category": "fashion", "gender": "men", "types": ["t-shirt"]},
+                            "soft": {"occasion": "sports", "fabrics": [], "fabric_named": False}})[0]
+    it, _ = A.enrich(it)
+    assert {"polyester", "quick-dry"} <= set(it["soft"]["fabrics"])   # added by the occasion rule
+    items = [p for p, _ in A.search(it, max_results=8)[0]]
+    assert items and all(p["gender"] in ("men", "unisex") and "sports" in p["occasions"] for p in items)
+    assert items[0]["fabric"] in ("quick-dry", "polyester", "nylon")   # stated performance fabric ranks first
+
+
+def test_prompt_and_schema():
+    import json
+    for t in A.ALLOWED["types"]:
+        assert t in A.SYSTEM
+    for k in ("query_type", "support", "out_of_catalog", "Previous search constraints"):
+        assert k in A.SYSTEM
+    json.dumps(A.RESPONSE_SCHEMA)
+    assert A.RESPONSE_SCHEMA["properties"]["query_type"]["enum"] == ["product_search", "out_of_catalog", "support", "other"]
+
+
 def test_vectorised_search_matches_reference():
     random.seed(1)
     types, fabs = sorted(A._TYP_M), [f for f in A._FAB_M if f]
     for _ in range(60):
         h = dict(category=random.choice([None, "fashion", "lifestyle"]), gender=random.choice([None, "women", "men"]),
-                 budget_max=random.choice([None, 800, 3000]), size=random.choice([None, "M", "32"]),
+                 budget_max=random.choice([None, 800, 3000]), budget_min=random.choice([None, None, 500]), size=random.choice([None, "M", "32"]),
                  types=random.sample(types, random.choice([0, 1, 2])), style=random.choice([None, "ethnic", "western"]))
         s = dict(occasion=random.choice([None, "wedding", "office"]), time=random.choice([None, "day", "evening"]),
+                 colours=random.sample(["lilac", "navy blue", "white", "pink", "mustard"], random.choice([0, 0, 1])),
+                 fabric_named=random.choice([True, False]),
                  colour_family=random.sample(["pastel", "dark", "neutral"], random.choice([0, 1])), fabrics=random.sample(fabs, random.choice([0, 2])),
                  pairs=random.choice([None, "silver"]), needs=[])
         ref = np.array([A._hard_ok(p, h)[0] for p in A._PL])
         assert (A._hard_mask(h) == ref).all(), h
         soft = A._all(A._soft_masks(s), A._hard_mask(h))
-        assert (soft == np.array([r and all(c[1] for c in A.check_soft(p, s)) for r, p in zip(ref, A._PL)])).all(), s
+        # a check passes unless it is False (None = not stated in the listing, allowed for inferred fabrics)
+        assert (soft == np.array([r and all(c[1] is not False for c in A.check_soft(p, s)) for r, p in zip(ref, A._PL)])).all(), s
 
 
 def test_fast():

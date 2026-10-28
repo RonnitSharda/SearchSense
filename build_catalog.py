@@ -167,12 +167,20 @@ def colours(name, desc):
     return uniq[:2]
 
 
+SPORTS_WORDS = re.compile(r"\b(running|training|gym|sports?|workout|yoga|athletic|active ?wear|track ?pants?|joggers?|"
+                          r"jogging|cycling|football|tennis|badminton|cricket)\b", re.I)
+QUICK_DRY = re.compile(r"rapid[- ]?dry|quick[- ]?dry|dri[- ]?fit|dry ?cell|drycell|wicks?|wicking|dries fast|sweat[- ]absorb", re.I)
+
+
 def fabric(name, desc, t):
-    text = f"{name.lower()} {desc.lower()[:400]}"
+    text = f"{name.lower()} {desc.lower()}"
     for rx, f in FABRIC_RULES:
         if rx.search(text):
             return f
-    return "denim" if t == "jeans" else ""
+    if t == "jeans":
+        return "denim"
+    # performance fabric named only by its technology ("Rapid Dry technology wicks sweat")
+    return "quick-dry" if QUICK_DRY.search(text) else ""
 
 
 def derive(row):
@@ -228,6 +236,8 @@ def derive(row):
         occ = ["home"]
     else:
         occ = ["daily"]
+    if t in {"t-shirt", "shorts", "trousers", "sweatshirt", "jacket", "leggings", "top"} and SPORTS_WORDS.search(f"{title} {desc}"):
+        occ += ["sports"]
     occ = list(dict.fromkeys(occ)) or ["casual"]
 
     # time of day
@@ -258,6 +268,8 @@ def derive(row):
                     (r"\boversized\b|relaxed fit|loose fit", "Relaxed or loose fit")):
         if re.search(rx, lt) and msg not in notes:
             notes.append(msg)
+    if QUICK_DRY.search(f"{title} {desc}"):
+        notes.append("Quick-dry / sweat-wicking fabric (per description)")
 
     # simulated sizes + fit signal (flagged fit_sim=1 in the output)
     if cat == "fashion" and t in SIZED_TYPES_ALPHA:

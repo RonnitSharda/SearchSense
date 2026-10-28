@@ -9,6 +9,14 @@ Agentic AI mode for an e-commerce search bar.
 - **🧪 Test cases** has nine scripted shoppers (Rohan, Priya, Ananya, Ambiguous, No exact match, Lifestyle, Skincare, Order help, Follow-up). Each **Run test** button runs the case and opens the results.
 - **🧠 AI trace** shows every step of the last search: router decision, spelling fixes, model call, context tools, verifier attempts, a per-result constraint table and the structured intent. The sidebar toggle "Show agent trace" also shows a compact trace under the results.
 
+## The agent's master prompt
+`prompt.py` holds the intent agent's instructions (rendered copy: `docs/MASTER_PROMPT.md`). Step 1 classifies every message:
+`product_search`, `out_of_catalog` (we don't sell it; offer the closest thing we do), `support` (orders, returns, refunds,
+payments, account: handed to Customer Care) or `other` (chit-chat, rule-breaking requests). Step 2 extracts hard and soft
+constraints using only catalog values. Gemini gets a strict JSON schema with those values, falls back to the prompt alone if a
+model rejects the schema, and `validate_intent` repairs or drops anything the search can't use (each fix is shown in the AI
+trace). If every model fails, the original query runs on normal search (the safety net in the solution doc).
+
 ## What is real and what is simulated
 The catalog is **24 hand-written demo products** (so the scripted scenarios stay reliable) plus **about 5,200 real Myntra listings** (`data/myntra_catalog.csv.gz`).
 

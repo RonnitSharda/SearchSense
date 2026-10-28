@@ -1,4 +1,4 @@
-import os, re, time, html
+import os, re, time, html, json
 import streamlit as st
 from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE, CATALOG_SOURCE
 import agent as A
@@ -54,22 +54,50 @@ def risky_note(p):
     for n in p["notes"]:
         if "not see" in n.lower(): continue
         if any(w in n.lower() for w in ["runs small", "runs slightly large", "sheer", "see-through", "peach", "heavy", "creases", "fragrance", "cool white", "relaxed"]):
-            return f'<span class="note">⚠ {html.escape(n)}</span>'
+            return f'<span class="note">💡 {html.escape(n)}</span>'
     return ""
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def cached_understand(query, history, _key, models):
-    return A.understand(query, _key, list(models), list(history))
+@st.cache_resource
+def _intent_cache():
+    return {}
+
+
+def cached_understand(query, history, _key, models, previous=""):
+    """Identical queries reuse the agent's answer (saves quota and latency). Failures are never cached."""
+    import copy
+    cache, key = _intent_cache(), (query, history, models, previous)
+    if key in cache:
+        intent, model, log = copy.deepcopy(cache[key])
+        return intent, model, log + ["served from cache"]
+    out = A.understand(query, _key, list(models), list(history), json.loads(previous) if previous else None)
+    if out[1] != "failed":
+        if len(cache) > 500: cache.clear()
+        cache[key] = copy.deepcopy(out)
+    return out
+
+
+TOP_CHART = {"XS": {"Chest (in)": 32, "Waist (in)": 26, "Shoulder (in)": 13.5}, "S": {"Chest (in)": 34, "Waist (in)": 28, "Shoulder (in)": 14},
+             "M": {"Chest (in)": 36, "Waist (in)": 30, "Shoulder (in)": 14.5}, "L": {"Chest (in)": 38, "Waist (in)": 32, "Shoulder (in)": 15},
+             "XL": {"Chest (in)": 40, "Waist (in)": 34, "Shoulder (in)": 15.5}, "XXL": {"Chest (in)": 42, "Waist (in)": 36, "Shoulder (in)": 16}}
+WAIST_CHART = {w: {"Waist (in)": int(w), "Hip (in)": int(w) + 8, "Inseam (in)": 30} for w in WAIST_ORDER}
+
+
+def mark(ok):
+    """Verifier result: pass, fail, or unknown (the listing doesn't state it)."""
+    return "✓" if ok else ("?" if ok is None else "✕")
 
 def chips_from(intent):
     h, s = intent.get("hard", {}), intent.get("soft", {})
     out = []
-    if h.get("budget_max"): out.append((f"Under ₹{h['budget_max']:,}", "hard", "budget_max"))
+    if h.get("budget_min") and h.get("budget_max"): out.append((f"₹{h['budget_min']:,}–{h['budget_max']:,}", "hard", "budget"))
+    elif h.get("budget_max"): out.append((f"Under ₹{h['budget_max']:,}", "hard", "budget"))
+    elif h.get("budget_min"): out.append((f"Over ₹{h['budget_min']:,}", "hard", "budget"))
     if h.get("gender"): out.append((h["gender"].title(), "hard", "gender"))
     if h.get("style"): out.append((h["style"].title(), "hard", "style"))
     if h.get("types"): out.append((" / ".join(h["types"]), "hard", "types"))
     if h.get("size"): out.append((f"Size {h['size']}", "hard", "size"))
     if s.get("fabrics"): out.append((", ".join(sorted(s["fabrics"])[:4]) + ("…" if len(s["fabrics"]) > 4 else ""), "soft", "fabrics"))
+    if s.get("colours"): out.append((" / ".join(s["colours"]).title(), "soft", "colours"))
     if s.get("colour_family"): out.append((" / ".join(s["colour_family"]).title(), "soft", "colour_family"))
     if s.get("occasion"): out.append((s["occasion"].title(), "soft", "occasion"))
     if s.get("time") and s["time"] != "any": out.append(("Daytime" if s["time"] == "day" else "Evening", "soft", "time"))
@@ -84,6 +112,8 @@ def apply_removed(intent, removed):
         if label in removed:
             if key.startswith("needs:"):
                 it["soft"]["needs"] = [n for n in it["soft"].get("needs", []) if n != key[6:]]
+            elif key == "budget":
+                it["hard"]["budget_min"] = it["hard"]["budget_max"] = None
             else:
                 it[sec][key] = [] if isinstance(it[sec].get(key), list) else None
     return it
@@ -112,20 +142,52 @@ def run_search(q, followup=False):
         r = dict(stage="agent", label="Follow-up: sent to agent with context", query=q_in, fixes=[], reason="Refinement of the previous search")
     res = dict(query=q, route=r, steps=[], t=0)
     if r["stage"] == 6:
-        res.update(kind="help")
-        res["steps"].append(("Hand-off", "help_desk()", "Order / returns question: no product search, sent to My orders → Track order"))
-    elif r["stage"] in (0, 2):
+        res.update(kind="help", qtype="support")
+        res["steps"].append(("Hand-off", "help_desk()", "Customer-support request (router): no product search, sent to Customer Care / Help chat"))
+    if r["stage"] in (0, 2):
         fixes = ", ".join(f"“{a}” → “{b}”" for a, b in r.get("fixes", [])) or "no spelling changes"
         res["steps"].append(("Spell check", "correct_tokens()", f"{fixes}; searching for “{r['query']}”"))
-        items = A.keyword_search(r["query"], max_results=24)
-        res["steps"].append(("Keyword search", "keyword_search()", f"{len(items)} matches (ranked by words matched, capped at 3 per brand). "
-                             "No AI call: short, specific queries skip Layer 1"))
-        res.update(kind="keyword", items=[p["id"] for p in items])
-        S.last_results = res["items"]
-    else:
+        g = A.query_gender(r["query"]) or S.profile.get("gender")
+        info = {}
+        items = A.keyword_search(r["query"], max_results=24, gender=S.profile.get("gender"), info=info)
+        res["steps"].append(("Keyword search", f"keyword_search(gender={g or 'any'})",
+                             f"{len(items)} matches; required words: {', '.join(info.get('words', [])) or 'none'} ({info.get('mode', '')}; "
+                             "a colour also accepts close shades)" + (f"; fashion limited to {g} + unisex" if g else "")
+                             + ". No AI call: short, specific queries skip Layer 1"))
+        if items or not API_KEY:
+            res.update(kind="keyword", items=[p["id"] for p in items])
+            S.last_results = res["items"]
+        else:   # nothing matched the words: let the agent work out what the shopper meant
+            res["steps"].append(("Escalation", "route()", "No keyword match, so the query goes to the AI agent"))
+            r = res["route"] = dict(stage="agent", label="No keyword match: sent to agent", query=q, fixes=[],
+                                    reason="Keyword search found nothing; the agent interprets the request")
+    if r["stage"] == "agent":
         hist = tuple(S.history) if followup else tuple()
-        intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS))
-        res["steps"].append(("Intent & constraints", f"model: {model}", "; ".join(log)))
+        prev = S.result.get("intent") if followup and S.result and S.result.get("kind") == "agent" else None
+        intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS),
+                                               json.dumps(prev, ensure_ascii=False, default=str) if prev else "")
+        res["steps"].append(("Intent & constraints", f"model: {model}", "; ".join(l for l in log if not l.startswith("validator:"))
+                             + ("; previous search's constraints passed as context" if prev else "")))
+        if model == "failed":   # safety net: the shopper is never worse off than normal search
+            items = A.keyword_search(q, max_results=24, gender=S.profile.get("gender"))
+            res["steps"].append(("Safety net", "keyword_search()", f"AI unavailable ({'; '.join(log)[:160]}), so the original query "
+                                 f"ran on normal search: {len(items)} matches"))
+            res.update(kind="keyword", items=[p["id"] for p in items], fallback=True,
+                       route=dict(r, stage=0, label="Safety net: normal search", reason="AI unavailable; normal search used"))
+            S.last_results = res["items"]
+            res["t"] = time.time() - t0
+            S.result, S.view = res, "search"
+            return
+        res["steps"].append(("Validator", "validate_intent()", next((l[11:] for l in log if l.startswith("validator:")), "")))
+        qt = intent.get("query_type", "product_search")
+        res["steps"].append(("Query type", "classify()", f"{qt}" + (f" · reply: “{intent['reply']}”" if intent.get("reply") else "")))
+        if qt in ("support", "other"):   # the agent recognised a message that is not a product search
+            res["steps"].append(("Hand-off", "help_desk()" if qt == "support" else "redirect()",
+                                 f"{'Customer-support request' if qt == 'support' else 'Not a shopping request'} (agent): {intent.get('interpretation', '')}"))
+            res.update(kind="help", qtype=qt, intent=intent, model=model, route=dict(r, stage=6))
+            res["t"] = time.time() - t0
+            S.result, S.view = res, "search"
+            return
         h = intent.setdefault("hard", {})
         if not h.get("gender") and h.get("category", "fashion") in (None, "fashion") and S.profile.get("gender"):
             h["gender"] = S.profile["gender"]
@@ -234,7 +296,8 @@ TEST_CASES = [
          expect="Only the oil-free, fragrance-free gel moisturiser passes every check."),
     dict(name="Order help", icon="📦", tag="Stage 6 · out of scope", query="where is my order",
          tests="Router spotting a non-search question.",
-         expect="No product search; hand-off to My orders → Track order."),
+         expect="“This isn’t a search query”: no product search, redirected to Customer Care / help chat. "
+                "Try “Return order” or “refund not received” too."),
     dict(name="Follow-up", icon="🔁", tag="Memory · refine", query="#2 but cheaper",
          setup="breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery",
          tests="Refining the previous search by pointing at a result.",
@@ -299,8 +362,9 @@ def view_trace():
             st.markdown('<div class="layer">Verifier: each result against each constraint</div>', unsafe_allow_html=True)
             if res["items"]:
                 rows = [{"#": k + 1, "product": p["name"][:34], "₹": p["price"],
-                         **{n: ("✓" if ok else "✕") for n, ok, _ in checks}} for k, (p, checks) in enumerate(res["items"])]
+                         **{n: mark(ok) for n, ok, _ in checks}} for k, (p, checks) in enumerate(res["items"])]
                 st.dataframe(rows, hide_index=True, use_container_width=True)
+                st.caption("✓ passes · ✕ fails · ? the listing doesn't state it (allowed only for inferred fabrics, ranked lower)")
             else:
                 st.caption("Nothing passed the hard constraints.")
             st.markdown('<div class="layer">Structured intent (what the model returned)</div>', unsafe_allow_html=True)
@@ -313,8 +377,11 @@ def view_trace():
             st.caption("Out-of-scope query: no catalog search ran.")
 
 # ------------------------------------------------------------------ views
-def product_card(p, i=None, checks=None, intent=None, numbered=True):
-    """One grid card: image with rating, brand, name, price, why line, fit badge, honest-note chip, View/Add."""
+def product_card(p, i=None, checks=None, intent=None, numbered=True, highlight=False):
+    """One grid card: image with rating, brand, name, price, why line, fit badge, honest-note chip, View/Add.
+    In search results the top three are highlighted (#1 best match, #2-3 top picks)."""
+    ribbon = ("Best match" if i == 1 else "Top pick" if i in (2, 3) else None) if highlight else None
+    marker = "pc best" if ribbon == "Best match" else "pc top" if ribbon else "pc"
     with st.container(border=True):
         if intent:
             why = f'<div class="why">✦ {html.escape(A.why_this(p, intent))}</div>'
@@ -322,8 +389,8 @@ def product_card(p, i=None, checks=None, intent=None, numbered=True):
             why = f'<div class="why sub">{html.escape(" · ".join(x for x in (p["type"].title(), p["colour"]) if x))}</div>'
         ck = ""
         if checks:
-            ck = '<div class="chk">' + " ".join(("✓ " if ok else "✕ ") + html.escape(n) for n, ok, _ in checks) + "</div>"
-        st.markdown(f'<span class="pc"></span>{image_block(p, i if numbered else None)}<div class="pbrand">{html.escape(p["brand"])}</div>'
+            ck = '<div class="chk">' + " ".join(f"{mark(ok)} " + html.escape(n) for n, ok, _ in checks) + "</div>"
+        st.markdown(f'<span class="{marker}"></span>{image_block(p, i if numbered else None, ribbon=ribbon)}<div class="pbrand">{html.escape(p["brand"])}</div>'
                     f'<div class="pname" title="{html.escape(p["name"])}">{html.escape(p["name"])}</div>{price_block(p)}{why}'
                     f'<div class="foot">{fit_badge(p)}<br>{risky_note(p)}{ck}</div>', unsafe_allow_html=True)
         b1, b2 = st.columns(2)
@@ -334,18 +401,28 @@ def product_card(p, i=None, checks=None, intent=None, numbered=True):
             size = (fa or {}).get("size") or p["sizes"][min(2, len(p["sizes"]) - 1)]
             S.cart.append(dict(id=p["id"], size=size)); st.toast(f"Added {p['name']} ({size})"); st.rerun()
 
-def grid(items, intent=None, ncols=4, numbered=True):
+def grid(items, intent=None, ncols=4, numbered=True, highlight=False):
     for r0 in range(0, len(items), ncols):
         cols = st.columns(ncols)
         for k, it in enumerate(items[r0:r0 + ncols]):
             p, checks = (it if isinstance(it, tuple) else (it, None))
             with cols[k]:
-                product_card(p, r0 + k + 1, checks, intent, numbered)
+                product_card(p, r0 + k + 1, checks, intent, numbered, highlight)
 
 
 @st.cache_data(show_spinner=False)
 def cached_browse(dept, ptype, sort):
     return A.browse(dept, ptype, sort)
+
+
+SUGGESTIONS = ["T-shirt for gym & running", "Kurta for office under ₹1,500", "Saree for a wedding", "Lilac dress for brunch",
+               "Linen shirt for summer", "Warm jacket for winter"]
+
+
+def run_suggestion(sq):
+    S.q = sq
+    run_search(sq)
+    go_tab(TABS[0])
 
 
 def _reset_home():
@@ -356,9 +433,15 @@ def view_home():
     st.markdown(f'<div class="hero"><div><div class="hero-t">Shop {len(PRODUCTS):,} products</div>'
                 '<div class="hero-s">Browse below, or describe what you need in the search bar: AI mode understands occasions, '
                 'weather, budget and fit. Not sure what to try? Open 🧪 Test cases.</div></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sugg">POPULAR SEARCHES · TAP TO TRY AI MODE</div>', unsafe_allow_html=True)
+    sc = st.columns(len(SUGGESTIONS))
+    for c, sq in zip(sc, SUGGESTIONS):
+        c.button(sq, key="sg" + sq, use_container_width=True, on_click=run_suggestion, args=(sq,))
     f1, f2, f3 = st.columns([4.2, 1.6, 1.4], vertical_alignment="bottom")
     with f1:
-        dept = st.segmented_control("Department", list(A.DEPARTMENTS), default="All", key="dept", on_change=_reset_home) or "All"
+        g = S.profile.get("gender")   # the sidebar's "Shopping for" picks the starting department
+        dept = st.segmented_control("Department", list(A.DEPARTMENTS), default={"women": "Women", "men": "Men"}.get(g, "All"),
+                                    key=f"dept_{g}", on_change=_reset_home) or "All"
     types = cached_browse_types(dept)
     ptype = f2.selectbox("Type", ["All types"] + types, key=f"ptype_{dept}", on_change=_reset_home)
     sort = f3.selectbox("Sort", ["Featured", "Price: low to high", "Price: high to low"], key="sort", on_change=_reset_home)
@@ -376,6 +459,23 @@ def cached_browse_types(dept):
     return A.browse_types(dept)
 
 
+def tradeoff(intent, relaxed, items):
+    """'Nothing in chanderi under ₹6,000. Here's the closest: … in cotton-silk at ₹5,800.'"""
+    show = lambda v: " / ".join(v) if isinstance(v, list) else str(v)
+    names = {"fabrics": "in {}", "colours": "in {}", "colour_family": "in {} colours", "pairs": "that pairs with {}",
+             "time": "for the {}", "occasion": "for a {}"}
+    asked = " and ".join(names.get(k, "{}").format(show(v)) for k, v in relaxed)
+    h = intent.get("hard", {})
+    budget = f" under ₹{h['budget_max']:,}" if h.get("budget_max") else ""
+    msg = f"Nothing {asked}{budget}."
+    if items:
+        p = items[0][0]
+        got = {"fabrics": p["fabric"] or "another fabric", "colours": p["colour"], "colour_family": p["colour"],
+               "pairs": p["pairs"], "time": p["time"], "occasion": ", ".join(p["occasions"][:2])}.get(relaxed[0][0], "")
+        msg += f" Here's the closest: {p['name']}{' in ' + got if got else ''} at ₹{p['price']:,}. Your other must-haves are kept."
+    return msg
+
+
 def view_search():
     res = S.result
     if not res:
@@ -383,14 +483,36 @@ def view_search():
         return
     r = res["route"]
     stage = r["stage"] if r["stage"] != "agent" else res.get("intent", {}).get("stage", 1)
-    fixes = "".join(f' &nbsp;<small>“{html.escape(a)}” → <b>{html.escape(b)}</b></small>' for a, b in r.get("fixes", []))
     rc1, rc2 = st.columns([6, 1.1], vertical_alignment="center")
-    rc1.markdown(f'<div class="router">{pill(stage)}<span>{html.escape(r["reason"])} · {res["t"]:.1f}s</span>{fixes}</div>',
-                 unsafe_allow_html=True)
+    if res["kind"] == "agent":
+        friendly = f"✦ <b>AI mode</b> read your request and checked every result against it ({res['t']:.1f}s)"
+    elif res["kind"] == "help":
+        friendly = "Not a product search" if res.get("qtype") != "other" else "Not a shopping request"
+    elif r.get("fixes"):
+        friendly = "Fixed spelling: " + ", ".join(f"“{html.escape(a)}” → <b>{html.escape(b)}</b>" for a, b in r["fixes"])
+    else:
+        friendly = f"Quick search for “{html.escape(r['query'])}”"
+    rc1.markdown(f'<div class="router">{pill(stage)}<span class="friendly">{friendly}</span></div>', unsafe_allow_html=True)
     rc2.button("🧠 AI trace", use_container_width=True, key="open_trace", on_click=go_tab, args=(TABS[2],))
 
     if res["kind"] == "help":
-        st.warning("This looks like an order question, not a product search. Handing you to Help: **My orders → Track order**.")
+        reply = res.get("intent", {}).get("reply")
+        if res.get("qtype") == "other":
+            st.markdown(f'<div class="helpbox"><div class="hb-t">🛍️ I can help you shop</div>'
+                        f'<div class="hb-s">{html.escape(reply or "That is not something the search bar can help with. Tell me what you are shopping for, or try one of these:")}</div></div>',
+                        unsafe_allow_html=True)
+            sc = st.columns(len(SUGGESTIONS))
+            for c, sq in zip(sc, SUGGESTIONS):
+                c.button(sq, key="hs" + sq, use_container_width=True, on_click=run_suggestion, args=(sq,))
+        else:
+            st.markdown(f'<div class="helpbox"><div class="hb-t">💬 This isn’t a search query: redirecting you to Customer Care</div>'
+                        f'<div class="hb-s">{html.escape(reply or "This sounds like a question for our support team.")} '
+                        'Customer Care handles returns, exchanges, refunds, order tracking, payments and your account.</div></div>',
+                        unsafe_allow_html=True)
+            h1, h2, _ = st.columns([1.3, 1.3, 3])
+            if h1.button("💬 Open help chat", type="primary", use_container_width=True, key="helpchat"):
+                st.info("Connecting you to a Customer Care agent… (demo: the help chat is not part of this prototype)")
+            h2.button("← Back to shopping", use_container_width=True, key="helpback", on_click=go_home)
         if show_trace:
             with st.expander("🧠 Agent trace: what SearchSense did", expanded=False):
                 render_trace(res)
@@ -400,13 +522,15 @@ def view_search():
             u1, u2 = st.columns([3, 2])
             u1.markdown(f"Showing results for **{html.escape(r['query'])}**")
             if u2.button(f"Search instead for “{res['query']}”", key="undo"):
-                items = [p["id"] for p in A.keyword_search(res["query"], max_results=24)]
+                items = [p["id"] for p in A.keyword_search(res["query"], max_results=24, gender=S.profile.get("gender"))]  # undo
                 S.result = dict(res, route=dict(r, fixes=[], stage=0, reason="Undo: original words"), items=items); st.rerun()
+        if res.get("fallback"):
+            st.info("AI mode is unavailable right now, so these are normal search results for your words.")
         items = [PRODUCTS[i] for i in res["items"]]
         S.last_results = res["items"]
         if items:
             st.markdown(f'<div class="rescount"><b>{len(items)}</b> results · normal search, size check on every product</div>', unsafe_allow_html=True)
-            grid(items)
+            grid(items, highlight=True)
         else:
             st.warning("No results. Try describing what you need.")
         if show_trace:
@@ -418,6 +542,8 @@ def view_search():
     maps = "".join(f'<div class="map">• “{html.escape(m.get("phrase",""))}” → {html.escape(str(m.get("maps_to","")))}</div>' for m in intent.get("mappings", []) or [])
     st.markdown(f'<div class="aim"><div class="t">✦ What I understood</div>'
                 f'<div class="i">{html.escape(intent.get("interpretation",""))}</div>{maps}</div>', unsafe_allow_html=True)
+    if intent.get("query_type") == "out_of_catalog":
+        st.markdown(f'<div class="relax">🛍️ {html.escape(intent.get("reply") or "We don’t sell this here yet.")}</div>', unsafe_allow_html=True)
 
     # clarifier (stage 4)
     if intent.get("stage") == 4 and intent.get("clarify"):
@@ -437,17 +563,21 @@ def view_search():
         items, relaxed, _, _ = A.search(it2, max_results=8)
 
     if relaxed:
-        what = ", ".join(f"{k.replace('_',' ')} ({', '.join(v) if isinstance(v, list) else v})" for k, v in relaxed)
-        st.markdown(f'<div class="relax">⚖ <b>No exact match.</b> I relaxed: {html.escape(what)}, and kept your budget and other must-haves.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="relax">⚖ {html.escape(tradeoff(intent, relaxed, items))}</div>', unsafe_allow_html=True)
     S.last_results = [p["id"] for p, _ in items]
     if items:
         st.markdown(f'<div class="rescount"><b>{len(items)}</b> results, each checked against your must-haves and your size</div>', unsafe_allow_html=True)
-        grid(items, intent)
+        grid(items, intent, highlight=True)
     else:
         st.warning("Nothing in the catalog meets your must-haves.")
         if res.get("near"):
             st.caption("Closest options if you can stretch the budget:")
             grid([PRODUCTS[i] for i in res["near"]])
+        else:   # safety net: never a dead end
+            kw = A.keyword_search(res["query"], max_results=8, gender=S.profile.get("gender"))
+            if kw:
+                st.caption("Normal search results for your words:")
+                grid(kw)
 
     with st.form("follow", clear_on_submit=True, border=False):
         f1, f2 = st.columns([6, 1])
@@ -493,11 +623,16 @@ def view_product():
                     if scale is WAIST_ORDER: S.fit_answer["waist"] = sz
                     else: S.fit_answer["anchor_size"] = sz
                     st.rerun()
+                if not fa["size"]:
+                    with st.expander("Rather not answer? Size chart with key measurements"):
+                        st.dataframe([{"Size": k, **v} for k, v in (WAIST_CHART if scale is WAIST_ORDER else TOP_CHART).items() if k in p["sizes"]],
+                                     hide_index=True, use_container_width=True)
+                        st.caption("Standard Indian size chart (illustrative). Measure yourself and pick the size whose numbers sit just above yours.")
         else:
             st.caption("Fit check not needed for this product.")
-        st.markdown('<div class="layer">Honest notes from reviews</div>', unsafe_allow_html=True)
+        st.markdown('<div class="layer">Fit &amp; fabric tips</div>', unsafe_allow_html=True)
         for n in p["notes"]:
-            st.markdown(f'<span class="note">⚠ {html.escape(n)}</span>', unsafe_allow_html=True)
+            st.markdown(f'<span class="note">💡 {html.escape(n)}</span>', unsafe_allow_html=True)
         if p["reviews"]:
             st.caption("Reviews: " + " · ".join(f"“{r}”" for r in p["reviews"]))
         elif not p["notes"]:

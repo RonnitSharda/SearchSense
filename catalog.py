@@ -178,4 +178,8 @@ OCCASION_RULES = {  # mocked occasion-rules tool
  ("wedding", "evening"): dict(colour_family=["dark", "bright"], fabric_pref="any", tip="Evening weddings allow richer colours and fabrics"),
  ("haldi", "day"): dict(colour_family=["bright", "pastel"], fabric_pref="light", tip="Haldi favours yellow or pastel cotton"),
  ("office", "day"): dict(colour_family=["neutral", "pastel"], fabric_pref="light", tip="Office wear favours neutral, breathable pieces"),
+ ("sports", "day"): dict(colour_family=[], fabric_pref="quick-dry", fabrics=["polyester", "nylon", "quick-dry"],
+                         tip="Workouts favour quick-dry synthetics (polyester, nylon, dri-fit) over cotton, which stays wet"),
+ ("sports", "evening"): dict(colour_family=[], fabric_pref="quick-dry", fabrics=["polyester", "nylon", "quick-dry"],
+                             tip="Workouts favour quick-dry synthetics (polyester, nylon, dri-fit) over cotton, which stays wet"),
 }

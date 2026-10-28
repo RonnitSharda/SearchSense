@@ -90,6 +90,20 @@ CARD .stButton button[kind="primary"]{background:var(--pink);color:#fff;border:0
 .tc-t{font-size:13px;color:#4A4E63;line-height:1.4;min-height:36px}
 .trace-q{font-size:18px;font-weight:700;color:var(--ink);margin:4px 0 0}
 
+/* top results */
+BEST{border:2px solid var(--pink)!important;box-shadow:0 6px 24px #FF3F6C26}
+TOP{border:1.5px solid #FFB3C6!important}
+.ribbon{position:absolute;right:8px;top:8px;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:800;letter-spacing:.4px}
+.ribbon.best{background:var(--pink);color:#fff}.ribbon.top{background:#fff;color:var(--pink);border:1px solid #FFB3C6}
+
+/* suggested searches */
+.sugg{font-size:12px;font-weight:700;color:var(--mute);letter-spacing:.4px;margin:2px 0 4px}
+.friendly{font-size:14px;color:var(--ink);margin:4px 0 2px}.friendly b{color:var(--pink)}
+
+/* customer-support hand-off */
+.helpbox{background:#F0F7FF;border:1px solid #CFE3FF;border-left:4px solid #3B82F6;border-radius:10px;padding:14px 18px;margin:6px 0 12px}
+.hb-t{font-size:17px;font-weight:800;color:var(--ink)}.hb-s{font-size:14px;color:#4A4E63;margin-top:4px}
+
 /* trace + risks */
 .step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
 .step b{color:var(--ink)}
@@ -104,7 +118,9 @@ CARD .stButton button[kind="primary"]{background:var(--pink);color:#fff;border:0
 # A bordered st.container is a stVerticalBlock in current Streamlit and a stVerticalBlockBorderWrapper in older releases.
 _CARD = (':is(div[data-testid="stVerticalBlock"]:has(> .element-container .pc),'
          'div[data-testid="stVerticalBlockBorderWrapper"]:has(> div[data-testid="stVerticalBlock"] > .element-container .pc))')
-CSS = CSS.replace("CARD", _CARD)
+_card = lambda marker: (f':is(div[data-testid="stVerticalBlock"]:has(> .element-container {marker}),'
+                        f'div[data-testid="stVerticalBlockBorderWrapper"]:has(> div[data-testid="stVerticalBlock"] > .element-container {marker}))')
+CSS = CSS.replace("BEST", _card(".pc.best")).replace("TOP", _card(".pc.top")).replace("CARD", _CARD)
 
 
 SILH = {
@@ -127,12 +143,14 @@ def silhouette_key(p):
     return "garment"
 
 
-def image_block(p, idx=None, tall=False):
+def image_block(p, idx=None, tall=False, ribbon=None):
     """Product image: real photo if the item has one, else a tinted silhouette. The tinted silhouette always renders behind the photo, so a dead image URL shows the silhouette (no onerror: Streamlit's React renderer rejects it)."""
     sw = p["swatch"]
     img = f'<img src="{html.escape(p["image"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if p.get("image") else ""
     rate = f'<span class="rate">{p["rating"]} <i>★</i></span>' if p.get("rating") else ""
     num = f'<span class="idx">#{idx}</span>' if idx else ""
+    if ribbon:
+        num += f'<span class="ribbon {"best" if ribbon == "Best match" else "top"}">{html.escape(ribbon)}</span>'
     style = f"background:linear-gradient(160deg,{sw}55,{sw})" + (";aspect-ratio:3/3.8" if tall else "")
     return f'<div class="pimg" style="{style}">{SILH[silhouette_key(p)]}{img}{num}{rate}</div>'
 
