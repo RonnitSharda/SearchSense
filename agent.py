@@ -159,7 +159,9 @@ def _compact_previous(prev):
     return f"[Previous search constraints: {json.dumps(out, ensure_ascii=False)}] " if out else ""
 
 
-def call_gemini(api_key, model, query, history=None, previous=None, use_schema=True):
+def call_gemini(api_key, model, query, history=None, previous=None, use_schema=True, no_thinking=True):
+    """One Gemini call. Thinking is switched off (this is extraction, not reasoning: it cut latency from ~13s);
+    if a model rejects that setting or the schema, retry without it, one setting at a time."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     text = query
     if previous:
@@ -169,14 +171,18 @@ def call_gemini(api_key, model, query, history=None, previous=None, use_schema=T
     gen = {"responseMimeType": "application/json", "temperature": 0.1}
     if use_schema:
         gen["responseSchema"] = RESPONSE_SCHEMA
+    if no_thinking:
+        gen["thinkingConfig"] = {"thinkingBudget": 0}
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM}]},
         "contents": [{"role": "user", "parts": [{"text": text}]}],
         "generationConfig": gen,
     }
-    r = requests.post(url, json=body, timeout=30)
-    if r.status_code == 400 and use_schema:  # a model that rejects the schema: retry once with the prompt alone
-        return call_gemini(api_key, model, query, history, previous, use_schema=False)
+    r = requests.post(url, json=body, timeout=20)
+    if r.status_code == 400 and no_thinking:      # model without a thinking switch
+        return call_gemini(api_key, model, query, history, previous, use_schema, no_thinking=False)
+    if r.status_code == 400 and use_schema:       # model that rejects the schema: the prompt alone still works
+        return call_gemini(api_key, model, query, history, previous, use_schema=False, no_thinking=False)
     if r.status_code != 200:
         raise RuntimeError(f"{r.status_code}: {r.text[:200]}")
     txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]

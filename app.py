@@ -1,8 +1,21 @@
-import os, re, time, html, json, collections
+import os, re, sys, time, html, json, collections, importlib
 import streamlit as st
-from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE, CATALOG_SOURCE
-import agent as A
-from ui import CSS, image_block, price_block
+
+# When new code is deployed, Streamlit unloads changed modules while other sessions may be importing them, which can
+# raise KeyError('catalog') inside Python's import system. Retry the imports instead of showing the error.
+for _attempt in range(5):
+    try:
+        from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE, CATALOG_SOURCE
+        import agent as A
+        from ui import CSS, image_block, price_block
+        break
+    except KeyError:
+        if _attempt == 4:
+            raise
+        for _m in ("catalog", "prompt", "agent", "ui"):
+            sys.modules.pop(_m, None)
+        importlib.invalidate_caches()
+        time.sleep(0.3)
 
 st.set_page_config(page_title="SearchSense: agentic search MVP", page_icon="🔎", layout="wide")
 
@@ -14,7 +27,7 @@ def _secret(k, default=None):
         return os.environ.get(k, default)
 
 API_KEY = _secret("GEMINI_API_KEY")
-MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
+MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-lite-latest,gemini-flash-latest,gemini-2.5-flash").split(",") if m.strip()]
 
 st.markdown(CSS, unsafe_allow_html=True)
 
@@ -69,7 +82,8 @@ def cached_understand(query, history, _key, models, previous=""):
     if key in cache:
         intent, model, log = copy.deepcopy(cache[key])
         return intent, model, log + ["served from cache"]
-    out = A.understand(query, _key, list(models), list(history), json.loads(previous) if previous else None)
+    with st.spinner("✦ AI mode is reading your request…"):
+        out = A.understand(query, _key, list(models), list(history), json.loads(previous) if previous else None)
     if out[1] != "failed":
         if len(cache) > 500: cache.clear()
         cache[key] = copy.deepcopy(out)

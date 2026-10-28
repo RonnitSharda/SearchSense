@@ -212,14 +212,18 @@ def derive(row):
             occ += ["wedding", "festive"]
         if t in {"kurta", "kurta set", "salwar suit", "nehru jacket", "palazzo", "dupatta"}:
             occ += ["festive"] if "festive" not in occ else []
-            if fab in ("cotton", "linen", "khadi", "chanderi", "rayon", "mul cotton") and not EVENING_WORDS.search(lt):
+            # everyday kurtas: unless the listing reads as evening / heavy wear, it suits casual and office days.
+            # (Most listings don't state a fabric, so an unknown fabric must not rule this out.)
+            heavy = EVENING_WORDS.search(lt) or fab in ("velvet", "silk", "brocade", "satin", "net", "georgette")
+            if not heavy:
                 occ += ["casual", "office"]
             if FESTIVE_WORDS.search(lt) and "wedding" not in occ and fam in ("pastel", "bright"):
                 occ += ["wedding"]
-            if fam == "bright" and "yellow" in colour:
+        # haldi / mehendi: daytime ethnic wear in bright or pastel colours, not heavy evening fabrics
+        if t in WEDDING_TYPES | {"kurta", "palazzo", "dupatta"} and "haldi" not in occ and t not in {"sherwani", "nehru jacket"}:
+            heavy = EVENING_WORDS.search(lt) or fab in ("velvet", "silk", "brocade", "satin", "net")
+            if ("yellow" in colour or fam in ("bright", "pastel")) and not heavy:
                 occ += ["haldi"]
-        if t in WEDDING_TYPES and "haldi" not in occ and (("yellow" in colour) or (fab == "cotton" and fam in ("bright", "pastel") and t in {"kurta set", "saree"})):
-            occ += ["haldi"]
         if t in {"dress", "jumpsuit", "co-ord set", "skirt", "top"}:
             occ += ["casual", "brunch"]
             if PARTY_WORDS.search(lt): occ += ["party"]
