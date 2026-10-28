@@ -497,9 +497,6 @@ with st.sidebar:
                     S.q = q; run_search(q); go_tab(TABS[0]); st.rerun()
 
     st.divider()
-    dark = st.toggle("🌙 Dark mode", key="dark_mode")
-    if dark:
-        st.markdown(DARK_CSS, unsafe_allow_html=True)
     show_trace = st.toggle("Show agent trace", value=True, help="Shows the trace under each search result. The 🧠 AI trace tab always has the full trace.")
     st.markdown(f"**AI model:** {'Gemini (' + MODELS[0] + ')' if API_KEY else 'offline rules (no key set)'}")
     st.caption(f"Catalog: {CATALOG_SOURCE}. Titles, brands, prices and images are real Myntra listings; colour, fabric, occasion "
@@ -518,11 +515,16 @@ if go and q.strip():
     run_search(q.strip())
     go_tab(TABS[0])
 
-n1, n2, n3 = st.columns([6.2, 1.2, 1.1], vertical_alignment="center")
+S.setdefault("dark_mode", False)
+if S.dark_mode:
+    st.markdown(DARK_CSS, unsafe_allow_html=True)
+n1, n2, n3, n4 = st.columns([5.6, 1.2, 1.1, 0.75], vertical_alignment="center")
 with n1:
     st.segmented_control("Section", TABS, key="tab", on_change=_tab_changed, label_visibility="collapsed")
 n2.button("🏠 All products", use_container_width=True, key="home_top", on_click=go_home)
 n3.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top", on_click=open_cart)
+n4.button("☀️ Light" if S.dark_mode else "🌙 Dark", use_container_width=True, key="theme_top",
+          help="Switch between light and dark mode", on_click=lambda: S.__setitem__("dark_mode", not S.dark_mode))
 
 # ------------------------------------------------------------------ test cases (scripted personas)
 TEST_CASES = [

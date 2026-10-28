@@ -23,7 +23,7 @@ Agentic AI mode for an e-commerce search bar.
   (needs a Gemini key).
 - **Spelling:** with a Gemini key, any unknown word goes to the agent, which fixes clear typos (stage 2) or asks
   "Did you mean ...?" (stage 4); without a key a local spell-checker does the same.
-- **🌙 Dark mode** toggle in the sidebar.
+- **🌙 Dark / ☀️ Light** button in the top bar, next to Cart.
 
 ## The agent's master prompt
 `prompt.py` holds the intent agent's instructions (rendered copy: `docs/MASTER_PROMPT.md`). Step 1 classifies every message:
