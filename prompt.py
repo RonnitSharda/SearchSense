@@ -47,6 +47,10 @@ VOCAB_RULES = [
     ("goes with gold / kundan / temple jewellery", "pairs gold"),
     ("for my wife, mom, sister, girlfriend, her", "gender women"),
     ("for my husband, dad, brother, boyfriend, him", "gender men"),
+    ("less heavy, lighter, not so heavy, comfortable", "breathable fabrics (inferred), time day; avoid heavy evening fabrics"),
+    ("more formal, for meetings", "occasion office, colour_family neutral"),
+    ("less flashy, subtle, simple", "colour_family pastel or neutral"),
+    ("more festive, dressier, more bling", "occasion festive or party"),
 ]
 
 
@@ -74,7 +78,7 @@ EXAMPLES = [
                "fabrics": ["linen"], "fabric_named": True, "pairs": None, "needs": []},
       "mappings": [], "clarify": None}),
     ("something nice to wear for my sister's sangeet, around 4k",
-     {"stage": 4, "interpretation": "Evening sangeet outfit for a woman, around ₹4,000",
+     {"confidence": "medium", "stage": 4, "interpretation": "Evening sangeet outfit for a woman, around ₹4,000",
       "hard": {"category": "fashion", "gender": "women", "budget_min": 3000, "budget_max": 4600, "size": None, "types": [], "style": None},
       "soft": {"occasion": "wedding", "time": "evening", "city": None, "colour_family": [], "colours": [],
                "fabrics": [], "fabric_named": False, "pairs": None, "needs": []},
@@ -133,8 +137,8 @@ EXAMPLES = [
 
 def _with_type(a):
     """Examples default to a product search; query_type and reply are listed first, as the model should decide them first."""
-    return {"query_type": a.get("query_type", "product_search"), "reply": a.get("reply"),
-            **{k: v for k, v in a.items() if k not in ("query_type", "reply")}}
+    return {"query_type": a.get("query_type", "product_search"), "reply": a.get("reply"), "confidence": a.get("confidence", "high"),
+            **{k: v for k, v in a.items() if k not in ("query_type", "reply", "confidence")}}
 
 
 # Message -> query_type, including the tricky ones. Shown to the model as a table.
@@ -197,6 +201,9 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
   taking them to Customer Care / the help chat and what for; for out_of_catalog, say we don't sell it and what you are showing
   instead (or suggest what they could search); for other, a polite redirect to shopping. Never promise refunds, dates, discounts
   or policies, and never claim an action was done.
+- confidence: "high" | "medium" | "low": how sure you are that the constraints capture what the shopper meant. Use "low"
+  when you had to guess (unfamiliar words, very unusual phrasing, a request you could only partly map). Low confidence makes the
+  app also show normal keyword results for the shopper's own words, so they are never worse off.
 - stage: 1 = clear, literal request; 3 = you translated subjective or contextual words into attributes;
   4 = ambiguous: a missing detail would split the results into very different sets (see Clarify);
   6 = not a product search (query_type support or other).
@@ -275,6 +282,7 @@ def build_response_schema(allowed):
         "properties": {
             "query_type": _str(["product_search", "out_of_catalog", "support", "other"]),
             "reply": _str(nullable=True),
+            "confidence": _str(["high", "medium", "low"]),
             "stage": {"type": "INTEGER"},
             "interpretation": _str(),
             "hard": {"type": "OBJECT", "properties": {
@@ -301,6 +309,6 @@ def build_response_schema(allowed):
             "clarify": {"type": "OBJECT", "nullable": True, "properties": {"question": _str(), "options": arr(_str())},
                         "required": ["question", "options"]},
         },
-        "required": ["query_type", "reply", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
-        "propertyOrdering": ["query_type", "reply", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
+        "required": ["query_type", "reply", "confidence", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
+        "propertyOrdering": ["query_type", "reply", "confidence", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
     }

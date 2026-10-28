@@ -323,6 +323,8 @@ def validate_intent(intent):
     if qt not in QUERY_TYPES:
         notes.append(f"query_type: “{it.get('query_type')}” → product_search"); qt = "product_search"
     it["query_type"] = qt
+    conf = str(it.get("confidence") or "high").lower()
+    it["confidence"] = conf if conf in ("high", "medium", "low") else "high"
     it["reply"] = (str(it.get("reply")).strip() or None) if it.get("reply") and qt != "product_search" else None
     if qt in ("support", "other"):   # not a search: no constraints, stage 6
         it.update(stage=6, clarify=None, mappings=[], hard={k: None for k in h} | {"types": []},
@@ -764,6 +766,12 @@ def keyword_filters(query, gender=None):
     return out
 
 
+# words shoppers use interchangeably; a normal search for one also matches the others
+KW_SYNONYMS = {"kurti": ["kurti", "kurta"], "kurta": ["kurta", "kurti"], "pyjama": ["pyjama", "pajama"],
+               "trousers": ["trouser", "pant", "chino"], "pant": ["pant", "trouser"], "jogger": ["jogger", "track"],
+               "lehenga": ["lehenga", "lehnga"], "saree": ["saree", "sari"], "tshirt": ["tshirt", "tee"]}
+
+
 _KW_STOP = {"for", "the", "and", "with", "in", "of", "an", "to", "my", "me", "some", "size", "buy", "show", "want", "need", "new", "best"}
 
 
@@ -777,7 +785,8 @@ def keyword_search(query, max_results=8, gender=None, info=None):
     every = np.ones(_N, bool)
     used = []
     for t in toks:
-        posts = [_KW_INDEX[v] for v in {_kw_stem(w) for w in COLOUR_SYNONYMS.get(t, [t])} if v in _KW_INDEX]
+        variants = COLOUR_SYNONYMS.get(t) or KW_SYNONYMS.get(t) or [t]
+        posts = [_KW_INDEX[v] for v in {_kw_stem(w) for w in variants} if v in _KW_INDEX]
         if not posts:
             continue   # a word the catalog doesn't know can't narrow anything
         m = np.zeros(_N, bool)
@@ -854,7 +863,7 @@ def fit_agent(p, profile):
     ask = "Which brand fits you best, and in what size?" if conf == "low" else None
     if rec not in p["sizes"]:
         return dict(size=None, confidence="low", reason=f"Your likely size {rec} is not stocked", ask=None)
-    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")))
+    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")), note=signal, base=base)
 
 
 def precheckout(cart, profile):

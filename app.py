@@ -42,10 +42,11 @@ S.setdefault("profile", dict(usual_size=None, waist=None, anchor_brand=None, anc
 S.setdefault("removed_chips", [])
 S.setdefault("fit_answer", {})
 S.setdefault("last_results", [])
-TABS = ["🏠 Shop", "🧪 Test cases", "🧠 AI trace"]
+TABS = ["🏠 Shop", "🧪 Test cases", "🧠 AI trace", "📊 Metrics"]
 S.setdefault("tab", TABS[0])
 S.setdefault("last_tab", TABS[0])
 S.setdefault("home_n", 24)
+S.setdefault("metrics", dict(searches=[], adds=[], nudges_shown=0, nudges_accepted=0, orders=0, ordered_items=0, flagged=set()))
 
 # ------------------------------------------------------------------ helpers
 STAGE_PILL = {0: ("0 · Pass-through", "p-grey"), 1: ("1 · Clear intent", "p-navy"), 2: ("2 · Minor correction", "p-navy"),
@@ -57,11 +58,19 @@ def pill(stage):
     return f'<span class="pill {c}">{t}</span>'
 
 def fit_badge(p):
+    """Solution doc, fit confidence table: High = "Take M"; Medium = size + the main fit note; Low = never a confident guess."""
     fa = A.fit_agent(p, S.profile)
     if not fa: return ""
-    if fa["size"]:
-        return f'<span class="badge b-{fa["confidence"]}">Size {fa["size"]} · {fa["confidence"]} confidence</span>'
-    return '<span class="badge b-low">Size: low confidence · tap to check fit</span>'
+    if fa["size"] and fa["confidence"] == "high":
+        return f'<span class="badge b-high" title="{html.escape(fa["reason"])}">Take {fa["size"]}</span>'
+    if fa["size"] and fa["confidence"] == "medium":
+        return f'<span class="badge b-medium" title="{html.escape(fa["reason"])}">{fa["size"]} recommended · {html.escape(fa["note"])}</span>'
+    return '<span class="badge b-low">Not sure of your size · check fit</span>'
+
+
+def record_add(p, size, fa):
+    """Accepted-size-recommendation KPI: did the shopper keep the size we suggested?"""
+    S.metrics["adds"].append(dict(pid=p["id"], size=size, rec=(fa or {}).get("size") if (fa or {}).get("confidence") in ("high", "medium") else None))
 
 def risky_note(p):
     for n in p["notes"]:
@@ -238,6 +247,7 @@ def run_search(q, followup=False):
             S.last_results = res["items"]
             res["t"] = time.time() - t0
             S.result, S.view = res, "search"
+            record_search(res)
             return
         res["steps"].append(("Validator", "validate_intent()", next((l[11:] for l in log if l.startswith("validator:")), "")))
         qt = intent.get("query_type", "product_search")
@@ -248,6 +258,7 @@ def run_search(q, followup=False):
             res.update(kind="help", qtype=qt, intent=intent, model=model, route=dict(r, stage=6))
             res["t"] = time.time() - t0
             S.result, S.view = res, "search"
+            record_search(res)
             return
         h = intent.setdefault("hard", {})
         if not h.get("gender") and h.get("category", "fashion") in (None, "fashion") and S.profile.get("gender"):
@@ -263,12 +274,28 @@ def run_search(q, followup=False):
         for t in trace: res["steps"].append(("Catalog search + verifier", "catalog_search()", t))
         if relaxed and intent.get("stage") != 4:
             intent["stage"] = 5
+        if intent.get("soft", {}).get("fabrics") and items:
+            gaps = sum(1 for p, _ in items if not p["fabric"])
+            if gaps:
+                res["steps"].append(("Catalog gaps", "flag_listing()", f"{gaps} of {len(items)} results don't state a fabric; "
+                                     "flagged to the catalog team (fabric was inferred, so they rank below listings that state it)"))
         res.update(items=items, relaxed=relaxed, near=[p["id"] for p in near])
         S.last_results = [p["id"] for p, _ in items]
         S.history.append(f"{q} -> {intent.get('interpretation','')}")
     res["t"] = time.time() - t0
     S.result = res
     S.view = "search"
+    record_search(res)
+
+
+def record_search(res):
+    n = len(res.get("items") or [])
+    S.metrics["searches"].append(dict(q=res["query"], kind=res["kind"], t=res["t"], n=n,
+                                      stage=res["route"]["stage"] if res["route"]["stage"] != "agent" else res.get("intent", {}).get("stage"),
+                                      clarify=bool(res.get("intent", {}).get("stage") == 4 and res.get("intent", {}).get("clarify")),
+                                      conf=res.get("intent", {}).get("confidence")))
+    if res["kind"] == "agent" and (res.get("intent", {}).get("soft", {}).get("fabrics")):
+        S.metrics["flagged"].update(p["id"] for p, _ in res["items"] if not p["fabric"])   # catalog gap: fabric not stated
 
 
 def go_tab(t):
@@ -292,7 +319,8 @@ def go_home():
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
     st.markdown("### 👤 Your fit profile")
-    st.caption("Used to recommend your size on every product, whichever way you search.")
+    st.caption("Used to recommend your size on every product, whichever way you search. "
+               "Only this session and the brands you choose to share are used; nothing is stored.")
     us = st.selectbox("Usual top size", ["Not set"] + SIZE_ORDER, index=3)
     wa = st.selectbox("Usual waist (jeans)", ["Not set"] + WAIST_ORDER, index=0)
     ab = st.selectbox("Brand that fits you best", list(ANCHOR_BRANDS.keys()), index=len(ANCHOR_BRANDS) - 1)
@@ -340,8 +368,8 @@ TEST_CASES = [
          expect="Breathable pastel ethnic sets under ₹6,000; the trace shows the Mumbai weather and day-wedding rules."),
     dict(name="Ananya", icon="👖", tag="Stage 1 · fit", query="high-waist straight jeans for office",
          tests="Fit agent when there is no size history.",
-         expect="Jeans with a low-confidence size badge. Open one and answer the fit question to get a confident size; "
-                "add two sizes to see the cart's ‘Keep only’ fix."),
+         expect="Jeans marked “Not sure of your size”: Add opens the product, which asks one fit question or shows the size "
+                "chart, never a guess. Answer it to get “32 recommended · runs small”; add two sizes to see the cart's ‘Keep only’ fix."),
     dict(name="Ambiguous", icon="❓", tag="Stage 4 · clarify", query="outfit for a wedding",
          tests="Asking one question only when the answer splits results.",
          expect="One question: Ethnic, Western or Show both. Tapping an option re-runs the search."),
@@ -391,6 +419,46 @@ def view_tests():
                             f'{pre}<div class="tc-l">Tests</div><div class="tc-t">{html.escape(case["tests"])}</div>'
                             f'<div class="tc-l">Expected</div><div class="tc-t">{html.escape(case["expect"])}</div>', unsafe_allow_html=True)
                 st.button("Run test", key="tc" + case["name"], use_container_width=True, type="primary", on_click=run_case, args=(case,))
+
+# ------------------------------------------------------------------ metrics (solution doc: impact, KPIs)
+def view_metrics():
+    m = S.metrics
+    ss = m["searches"]
+    st.markdown('<div class="tc-intro"><b>Session metrics</b> · the KPIs from the solution doc, measured live for this browser session. '
+                'In the pilot they come from an A/B test: a share of search traffic on AI mode, the rest on current search.</div>',
+                unsafe_allow_html=True)
+    if not ss:
+        st.info("Run a few searches or test cases, add something to the cart, and come back."); return
+    product = [x for x in ss if x["kind"] != "help"]
+    ai = [x for x in product if x["kind"] == "agent"]
+    kw = [x for x in product if x["kind"] == "keyword"]
+    zero = [x for x in product if x["n"] == 0]
+    clar = [x for x in ai if x["clarify"]]
+    rec_adds = [a for a in m["adds"] if a["rec"]]
+    accepted = [a for a in rec_adds if a["size"] == a["rec"]]
+    pct = lambda a, b: f"{100 * a / b:.0f}%" if b else "–"
+    ms = lambda xs: f"{1000 * sorted(xs)[len(xs) // 2]:.0f} ms" if xs else "–"
+    rows = [
+        ("Search-to-checkout conversion", "North star", "+20% vs keyword search",
+         f"{m['orders']} order(s) from {len(product)} searches ({pct(m['orders'], len(product))})"),
+        ("Size- and style-related return rate", "North star", "−15%",
+         f"measured after delivery; proxy here: {m['nudges_accepted']} of {m['nudges_shown']} return-risk nudges accepted"),
+        ("Zero-result and low-result searches", "Supporting", "Down", f"{len(zero)} of {len(product)} ({pct(len(zero), len(product))})"),
+        ("AI-mode queries that needed a clarifying question", "Guardrail", "Kept low", f"{len(clar)} of {len(ai)} ({pct(len(clar), len(ai))})"),
+        ("Accepted size recommendation rate", "Supporting", "Up", f"{len(accepted)} of {len(rec_adds)} adds kept our size ({pct(len(accepted), len(rec_adds))})"),
+        ("Search latency, pass-through queries", "Guardrail", "No change vs today", f"median {ms([x['t'] for x in kw])} (AI mode: {ms([x['t'] for x in ai])})"),
+    ]
+    st.dataframe([{"KPI": a, "Type": b, "Target": c, "This session": d} for a, b, c, d in rows], hide_index=True, use_container_width=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Searches", len(ss)); c2.metric("Sent to AI mode", pct(len(ai), len(product)))
+    c3.metric("Support hand-offs", sum(1 for x in ss if x["kind"] == "help")); c4.metric("Listings flagged to catalog team", len(m["flagged"]))
+    st.markdown('<div class="layer">Searches by stage</div>', unsafe_allow_html=True)
+    by = collections.Counter(STAGE_PILL.get(x["stage"], (str(x["stage"]),))[0] for x in ss)
+    st.dataframe([{"Stage": k, "Searches": v} for k, v in sorted(by.items())], hide_index=True, use_container_width=True)
+    with st.expander("Search log"):
+        st.dataframe([{"Query": x["q"], "Path": x["kind"], "Stage": x["stage"], "Results": x["n"], "Seconds": round(x["t"], 2),
+                       "Agent confidence": x["conf"] or ""} for x in reversed(ss)], hide_index=True, use_container_width=True)
+
 
 # ------------------------------------------------------------------ trace
 def render_trace(res):
@@ -459,8 +527,12 @@ def product_card(p, i=None, checks=None, intent=None, numbered=True, highlight=F
             S.pid, S.view = p["id"], "product"; st.rerun()
         if b2.button("Add", key=f"a{p['id']}{i}", use_container_width=True, type="primary"):
             fa = A.fit_agent(p, S.profile)
+            if fa and (not fa["size"] or fa["confidence"] == "low"):   # never a confident guess: let the shopper pick
+                S.pid, S.view = p["id"], "product"
+                st.toast("We're not sure of your size for this one. Answer one question or check the size chart."); st.rerun()
             size = (fa or {}).get("size") or p["sizes"][min(2, len(p["sizes"]) - 1)]
-            S.cart.append(dict(id=p["id"], size=size)); st.toast(f"Added {p['name']} ({size})"); st.rerun()
+            S.cart.append(dict(id=p["id"], size=size)); record_add(p, size, fa)
+            st.toast(f"Added {p['name']} ({size})"); st.rerun()
 
 def grid(items, intent=None, ncols=4, numbered=True, highlight=False):
     for r0 in range(0, len(items), ncols):
@@ -612,7 +684,9 @@ def agent_steps(res, products, relaxed=None, removed=()):
     memory = " · used previous search" if any("previous search" in o for o in find("Intent & constraints")) else ""
     fixes = find("Validator")
     val = "" if not fixes or fixes[0] == "all values valid" else " · validator fixed values"
-    out.append(("1", "Intent & constraints", "done", f"{nh} hard, {ns} soft ({model}){memory}{val}"))
+    conf = it.get("confidence", "high")
+    out.append(("1", "Intent & constraints", "relax" if conf == "low" else "done",
+                f"{nh} hard, {ns} soft · {conf} confidence ({model}){memory}{val}"))
     cl = it.get("clarify") if it.get("stage") == 4 else None
     out.append(("?", "Clarifier", "ask" if cl else "skip", f"asked: {cl['question']}" if cl else "not needed: intent is clear enough"))
     tools = [o for n, a, o in steps if n == "Context tool"] + [f"{o.split(' (')[0].replace('gender = ', '').title()} (from your profile)" for o in find("Profile")]
@@ -783,6 +857,9 @@ def view_search():
                    "best match first, with a size suggestion on each")
     else:
         showing = "nothing that meets every must-have. Remove a filter, or see the closest options below."
+    low_conf = intent.get("confidence") == "low"
+    if low_conf:
+        showing += " <i>I’m not fully sure I understood, so normal search results for your words are further down too.</i>"
     with top:
         bubble(res["query"], _intent_summary(intent), _why_notes(res, intent), showing)
         # clarifier (stage 4): the agent decided one answer would change the results, so it asks
@@ -799,6 +876,11 @@ def view_search():
     S.last_results = [p["id"] for p, _ in items]
     if items:
         grid(items, intent, highlight=True)
+    if items and low_conf:   # safety net: the agent wasn't sure, so the shopper also gets plain search
+        kw = A.keyword_search(res["query"], max_results=8, gender=S.profile.get("gender"))
+        if kw:
+            st.markdown('<div class="rescount">Normal search results for your words</div>', unsafe_allow_html=True)
+            grid(kw, numbered=False)
     else:
         if res.get("near"):
             st.caption("Closest options if you can stretch the budget:")
@@ -830,10 +912,18 @@ def view_product():
                     f"<div class='why'>{html.escape(meta)}</div>", unsafe_allow_html=True)
         st.markdown('<div class="layer">Size &amp; fit</div>', unsafe_allow_html=True)
         fa = A.fit_agent(p, S.profile)
+        low = bool(fa) and (not fa["size"] or fa["confidence"] == "low")
         if fa:
-            if fa["size"]:
-                st.markdown(f'<span class="badge b-{fa["confidence"]}" style="font-size:14px">Recommended: {fa["size"]} · {fa["confidence"]} confidence</span>'
-                            f'<div class="why">{html.escape(fa["reason"])}</div>', unsafe_allow_html=True)
+            if fa["size"] and not low:
+                head = f"Take {fa['size']}" if fa["confidence"] == "high" else f"{fa['size']} recommended · medium confidence"
+                note = "" if fa["confidence"] == "high" else f"; reviewers say it {fa['note'] if fa['note'] != 'true to size' else 'fits true to size'}"
+                st.markdown(f'<span class="badge b-{fa["confidence"]}" style="font-size:14px">{head}</span>'
+                            f'<div class="why">{html.escape(fa["reason"])}{html.escape(note) if fa["confidence"] == "medium" else ""}</div>',
+                            unsafe_allow_html=True)
+            elif low:
+                st.markdown('<span class="badge b-low" style="font-size:14px">Low confidence: we won’t guess your size</span>'
+                            f'<div class="why">{html.escape(fa["reason"])}. Answer one question below, or use the size chart.</div>',
+                            unsafe_allow_html=True)
             if fa.get("simulated"):
                 st.caption("Demo note: fit reviews and available sizes are simulated, not real shopper data.")
             if fa.get("ask"):
@@ -847,8 +937,8 @@ def view_product():
                     if scale is WAIST_ORDER: S.fit_answer["waist"] = sz
                     else: S.fit_answer["anchor_size"] = sz
                     st.rerun()
-                if not fa["size"]:
-                    with st.expander("Rather not answer? Size chart with key measurements"):
+                if low:
+                    with st.expander("Rather not answer? Size chart with key measurements", expanded=True):
                         st.dataframe([{"Size": k, **v} for k, v in (WAIST_CHART if scale is WAIST_ORDER else TOP_CHART).items() if k in p["sizes"]],
                                      hide_index=True, use_container_width=True)
                         st.caption("Standard Indian size chart (illustrative). Measure yourself and pick the size whose numbers sit just above yours.")
@@ -861,11 +951,12 @@ def view_product():
             st.caption("Reviews: " + " · ".join(f"“{r}”" for r in p["reviews"]))
         elif not p["notes"]:
             st.caption("No review notes for this listing.")
-        rec = (fa or {}).get("size")
-        idx = p["sizes"].index(rec) if rec in p["sizes"] else 0
-        size = st.radio("Size", p["sizes"], index=idx, horizontal=True)
-        if st.button("Add to cart", type="primary"):
-            S.cart.append(dict(id=p["id"], size=size)); st.toast("Added to cart"); st.rerun()
+        rec = None if low else (fa or {}).get("size")
+        idx = p["sizes"].index(rec) if rec in p["sizes"] else (None if low else 0)
+        size = st.radio("Size", p["sizes"], index=idx, horizontal=True, key=f"sz{p['id']}{rec}")   # resets when the recommendation changes
+        if st.button("Add to cart", type="primary", disabled=size is None, help="Pick a size first" if size is None else None):
+            S.cart.append(dict(id=p["id"], size=size)); record_add(p, size, fa)
+            st.toast("Added to cart"); st.rerun()
 
 def view_cart():
     if st.button("← Back"):
@@ -888,11 +979,15 @@ def view_cart():
     risks = A.precheckout(S.cart, S.profile)
     if not [r for r in risks if r["level"] != "info"]:
         st.success("No size or bracketing risks found. 👍")
+    shown_key = tuple((r["pid"], r["kind"]) for r in risks if r["fix"])
+    if shown_key and S.get("_nudges_seen") != shown_key:
+        S._nudges_seen = shown_key; S.metrics["nudges_shown"] += len(shown_key)
     for j, r in enumerate(risks):
         st.markdown(f'<div class="risk-{r["level"]}">{html.escape(r["msg"])}</div>', unsafe_allow_html=True)
         if r["fix"]:
             act, size = r["fix"]
             if st.button(f"{'Keep only' if act == 'keep' else 'Switch to'} {size}", key=f"fix{j}"):
+                S.metrics["nudges_accepted"] += 1
                 if act == "keep":
                     S.cart = [c for c in S.cart if not (c["id"] == r["pid"] and c["size"] != size)]
                     S.cart = [c for n, c in enumerate(S.cart) if not (c["id"] == r["pid"] and any(d["id"] == r["pid"] for d in S.cart[:n]))]
@@ -901,11 +996,14 @@ def view_cart():
                         if c["id"] == r["pid"]: c["size"] = size
                 st.rerun()
     if st.button("Place order (demo)", type="primary"):
+        S.metrics["orders"] += 1; S.metrics["ordered_items"] += len(S.cart)
         st.balloons(); st.success("Order placed (demo). Fewer surprises, fewer returns.")
 
 if S.tab == TABS[1]:
     view_tests()
 elif S.tab == TABS[2]:
     view_trace()
+elif S.tab == TABS[3]:
+    view_metrics()
 else:
     {"search": view_search, "product": view_product, "cart": view_cart}[S.view]()
