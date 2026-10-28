@@ -43,6 +43,30 @@ def test_scenarios():
     assert run("where is my order")[0]["stage"] == 6
 
 
+def test_spelling_aliases():
+    for q, want in [("sari", "saree"), ("Sari", "saree"), ("lengha", "lehenga"), ("tshirt M", "t-shirt M"), ("wite linnen shirt M", "white linen shirt M")]:
+        r = A.route(q)
+        assert r["stage"] == 2 and r["query"] == want, (q, r)
+    assert all(p["type"] == "saree" for p in A.keyword_search("saree"))
+    assert all(p["type"] == "t-shirt" for p in A.keyword_search("t-shirt"))
+
+
+def test_browse():
+    ids = A.browse()
+    assert len(ids) == len(PRODUCTS) == len(set(ids))
+    assert sum(PRODUCTS[i]["source"] == "demo" for i in ids[:24]) <= 4      # real listings lead the home page
+    assert all(PRODUCTS[i]["style"] == "ethnic" for i in A.browse("Ethnic"))
+    prices = [PRODUCTS[i]["price"] for i in A.browse("Women", "kurta", "Price: low to high")]
+    assert prices == sorted(prices) and prices
+
+
+def test_followup_uses_previous_search_only():
+    priya = "breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery"
+    hist = ["fragrance-free moisturiser for oily skin -> x", priya + " -> y"]
+    it, _, _ = A.understand("#2 but cheaper budget under 3298", None, [], hist)
+    assert it["hard"]["category"] == "fashion" and it["hard"]["budget_max"] == 3298 and it["hard"]["style"] == "ethnic"
+
+
 def test_vectorised_search_matches_reference():
     random.seed(1)
     types, fabs = sorted(A._TYP_M), [f for f in A._FAB_M if f]

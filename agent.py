@@ -36,11 +36,22 @@ OUT_OF_SCOPE = re.compile(r"\b(where is my order|track|refund|cancel|return my|m
 SIZE_RE = re.compile(r"\b(xs|s|m|l|xl|xxl|2[68]|3[0246])\b", re.I)
 
 
+# Spelling variants that are too far from the catalog word for fuzzy matching ("sari" vs "saree" is only 67% similar)
+ALIASES = {"sari": "saree", "saris": "sarees", "sarree": "saree", "lengha": "lehenga", "lehnga": "lehenga", "lahenga": "lehenga",
+           "ghagra": "lehenga", "kurtha": "kurta", "kurthi": "kurti", "kurtis": "kurti", "shalwar": "salwar",
+           "chudidar": "churidar", "dupata": "dupatta", "duppata": "dupatta", "sherwaani": "sherwani", "pajama": "pyjama",
+           "pajamas": "pyjama", "tshirt": "t-shirt", "tshirts": "t-shirt", "tees": "t-shirt", "jean": "jeans", "denims": "jeans",
+           "trouser": "trousers", "pant": "pants", "moisturizer": "moisturiser", "jewelry": "jewellery",
+           "lipstik": "lipstick", "parfum": "perfume", "kurtaset": "kurta set", "coord": "co-ord", "cushions": "cushion"}
+
+
 def correct_tokens(q):
     """Light spelling correction against catalog vocabulary (stage 2)."""
     out, fixes = [], []
     for tok in q.split():
         t = tok.lower()
+        if t in ALIASES and ALIASES[t] != t:
+            out.append(ALIASES[t]); fixes.append((tok, ALIASES[t])); continue
         if len(t) <= 2 or t in VOCAB or not t.isalpha():
             out.append(tok); continue
         m = difflib.get_close_matches(t, _VOCAB_BY_FIRST.get(t[0], []), n=6, cutoff=0.78)
@@ -126,9 +137,9 @@ def call_gemini(api_key, model, query, history=None):
 
 def rule_parse(query, history=None):
     """Offline fallback parser, used only if Gemini is unavailable."""
-    q = query.lower()
+    q = correct_tokens(query)[0].lower()
     if history:
-        q = " ".join(history[-2:]).lower() + " " + q
+        q = history[-1].lower() + " " + q   # the search being refined, not older ones
     hard = dict(category=None, gender=None, budget_max=None, size=None, types=[], style=None)
     soft = dict(occasion=None, time=None, city=None, colour_family=[], colours=[], fabrics=[], pairs=None, needs=[])
     maps = []
@@ -386,19 +397,83 @@ def search(intent, min_results=2, max_results=6):
     return [(_PL[i], check_soft(_PL[i], s)) for i in chosen], relaxed, trace, near
 
 
+# ------------------------------------------------------------------ browse (home page)
+DEPARTMENTS = {"All": None, "Women": ("gender", "women"), "Men": ("gender", "men"), "Ethnic": ("style", "ethnic"),
+               "Western": ("style", "western"), "Home": ("category", "lifestyle"), "Beauty": ("category", "personal care")}
+
+
+def _featured_order():
+    """Catalog interleaved across types so the first page is not all shirts, with the demo products mixed in."""
+    by_type = collections.defaultdict(list)
+    for i in np.argsort(-(_RATING + _JITTER), kind="stable"):
+        by_type[_PL[i]["type"]].append(int(i))
+    demo = [i for i, p in enumerate(_PL) if p.get("source") == "demo"]
+    queues = sorted((q for q in by_type.values()), key=len, reverse=True)
+    rest, k = [], 0
+    while any(queues):
+        for q in queues:
+            if k < len(q) and q[k] not in demo:
+                rest.append(q[k])
+        k += 1
+        if k > max(len(q) for q in queues): break
+    # real listings (with photos) lead; the illustrative demo products are mixed in from the second row on
+    out = rest[:8]
+    for k, i in enumerate(demo):
+        out += [i] + rest[8 + 4 * k: 12 + 4 * k]
+    return out + rest[8 + 4 * len(demo):]
+
+
+_FEATURED = np.array(_featured_order(), dtype=np.int64)
+
+
+def _dept_mask(dept):
+    m = np.ones(_N, bool)
+    spec = DEPARTMENTS.get(dept)
+    if spec:
+        field, val = spec
+        codes, mapping = {"gender": (_GEN, _GEN_M), "style": (_STY, _STY_M), "category": (_CAT, _CAT_M)}[field]
+        m &= codes == mapping.get(val, -1)
+        if field == "gender": m &= _CAT == _CAT_M.get("fashion", -1)
+    return m
+
+
+def browse_types(dept):
+    """Product types in a department, most common first."""
+    c = collections.Counter(_PL[i]["type"] for i in np.flatnonzero(_dept_mask(dept)))
+    return [t for t, _ in c.most_common()]
+
+
+def browse(dept="All", ptype=None, sort="Featured"):
+    """Ids for the home page grid."""
+    m = _dept_mask(dept)
+    if ptype: m &= _TYP == _TYP_M.get(ptype, -1)
+    if sort == "Featured":
+        idx = _FEATURED[m[_FEATURED]]
+    else:
+        idx = np.flatnonzero(m)
+        idx = idx[np.argsort(_PRICE[idx] if sort.startswith("Price: low") else -_PRICE[idx], kind="stable")]
+    return [_PL[i]["id"] for i in idx]
+
+
 def _kw_stem(t):
     return t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t
 
 
+def _kw_tokens(text):
+    """Keyword tokens; 't-shirt' stays one word so a t-shirt search doesn't match every shirt."""
+    text = re.sub(r"\bt-?shirts?\b|\btees?\b", " tshirt ", text.lower())
+    return {_kw_stem(t) for t in re.findall(r"[a-z]+", text) if len(t) > 1}
+
+
 _KW_INDEX = collections.defaultdict(list)
 for _i, _p in enumerate(_PL):
-    for _t in {_kw_stem(w) for w in re.findall(r"[a-z]+", f"{_p['name']} {_p['type']} {_p['colour']} {_p['fabric']} {_p['gender']}".lower())}:
+    for _t in _kw_tokens(f"{_p['name']} {_p['type']} {_p['colour']} {_p['fabric']} {_p['gender']}"):
         _KW_INDEX[_t].append(_i)
 _KW_INDEX = {t: np.array(v, dtype=np.int64) for t, v in _KW_INDEX.items()}
 
 
 def keyword_search(query, max_results=8):
-    toks = {_kw_stem(t) for t in re.findall(r"[a-z]+", query.lower()) if len(t) > 1}
+    toks = _kw_tokens(query)
     size = SIZE_RE.search(query)
     hits = np.zeros(_N)
     for t in toks:

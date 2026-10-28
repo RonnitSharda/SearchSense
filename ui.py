@@ -73,6 +73,23 @@ span[data-tag] svg{stroke:var(--pink)}
 CARD .stButton button{height:36px!important;min-height:36px!important;border-radius:8px!important;font-size:13px;font-weight:700}
 CARD .stButton button[kind="primary"]{background:var(--pink);color:#fff;border:0}
 
+/* home hero */
+.hero{background:linear-gradient(100deg,#FFF0F3 0%,#FFF8F0 60%,#F4F1FF 100%);border-radius:14px;padding:18px 22px;margin:4px 0 12px}
+.hero-t{font-size:22px;font-weight:800;color:var(--ink);letter-spacing:-.4px}
+.hero-s{font-size:13.5px;color:#4A4E63;margin-top:3px;max-width:820px}
+.why.sub{color:var(--mute);min-height:0}
+
+/* test cases */
+.tc-intro{font-size:14px;color:#4A4E63;background:var(--bg);border-radius:10px;padding:10px 14px;margin:4px 0 14px}
+.tc-head{display:flex;gap:12px;align-items:center;margin-bottom:8px}
+.tc-ic{font-size:26px;width:46px;height:46px;border-radius:12px;background:var(--pinkL);display:flex;align-items:center;justify-content:center}
+.tc-name{font-weight:800;font-size:16px;color:var(--ink)}
+.tc-tag{display:inline-block;font-size:11px;font-weight:700;color:var(--pink);background:var(--pinkL);border-radius:20px;padding:2px 9px;margin-top:2px}
+.tc-q{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--bg);border-radius:8px;padding:8px 10px;color:var(--ink);margin:6px 0 8px;min-height:58px}
+.tc-l{font-size:10.5px;font-weight:800;letter-spacing:.8px;color:var(--mute);text-transform:uppercase;margin-top:6px}
+.tc-t{font-size:13px;color:#4A4E63;line-height:1.4;min-height:36px}
+.trace-q{font-size:18px;font-weight:700;color:var(--ink);margin:4px 0 0}
+
 /* trace + risks */
 .step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
 .step b{color:var(--ink)}

@@ -29,6 +29,10 @@ S.setdefault("profile", dict(usual_size=None, waist=None, anchor_brand=None, anc
 S.setdefault("removed_chips", [])
 S.setdefault("fit_answer", {})
 S.setdefault("last_results", [])
+TABS = ["🏠 Shop", "🧪 Test cases", "🧠 AI trace"]
+S.setdefault("tab", TABS[0])
+S.setdefault("last_tab", TABS[0])
+S.setdefault("home_n", 24)
 
 # ------------------------------------------------------------------ helpers
 STAGE_PILL = {0: ("0 · Pass-through", "p-grey"), 1: ("1 · Clear intent", "p-navy"), 2: ("2 · Minor correction", "p-navy"),
@@ -109,8 +113,15 @@ def run_search(q, followup=False):
     res = dict(query=q, route=r, steps=[], t=0)
     if r["stage"] == 6:
         res.update(kind="help")
+        res["steps"].append(("Hand-off", "help_desk()", "Order / returns question: no product search, sent to My orders → Track order"))
     elif r["stage"] in (0, 2):
-        res.update(kind="keyword", items=[p["id"] for p in A.keyword_search(r["query"])])
+        fixes = ", ".join(f"“{a}” → “{b}”" for a, b in r.get("fixes", [])) or "no spelling changes"
+        res["steps"].append(("Spell check", "correct_tokens()", f"{fixes}; searching for “{r['query']}”"))
+        items = A.keyword_search(r["query"], max_results=24)
+        res["steps"].append(("Keyword search", "keyword_search()", f"{len(items)} matches (ranked by words matched, capped at 3 per brand). "
+                             "No AI call: short, specific queries skip Layer 1"))
+        res.update(kind="keyword", items=[p["id"] for p in items])
+        S.last_results = res["items"]
     else:
         hist = tuple(S.history) if followup else tuple()
         intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS))
@@ -125,15 +136,35 @@ def run_search(q, followup=False):
         res.update(kind="agent", intent=intent, model=model)
         if intent.get("stage") == 4 and intent.get("clarify"):
             res["steps"].append(("Clarifier", "stage 4", intent["clarify"]["question"]))
-        items, relaxed, trace, near = A.search(intent)
+        items, relaxed, trace, near = A.search(intent, max_results=8)
         for t in trace: res["steps"].append(("Catalog search + verifier", "catalog_search()", t))
         if relaxed and intent.get("stage") != 4:
             intent["stage"] = 5
         res.update(items=items, relaxed=relaxed, near=[p["id"] for p in near])
+        S.last_results = [p["id"] for p, _ in items]
         S.history.append(f"{q} -> {intent.get('interpretation','')}")
     res["t"] = time.time() - t0
     S.result = res
     S.view = "search"
+
+
+def go_tab(t):
+    S.tab = S.last_tab = t
+
+
+def _tab_changed():
+    if S.tab is None:  # clicking the selected tab again deselects it; keep the previous one
+        S.tab = S.last_tab
+    else:
+        S.last_tab = S.tab
+
+
+def open_cart():
+    S.view = "cart"; go_tab(TABS[0])
+
+
+def go_home():
+    S.result, S.view, S.home_n = None, "search", 24; go_tab(TABS[0])
 
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
@@ -151,15 +182,14 @@ with st.sidebar:
     if S.fit_answer:
         st.caption(f"Fit answer saved: {S.fit_answer.get('anchor_brand')} {S.fit_answer.get('waist') or S.fit_answer.get('anchor_size')}")
     st.divider()
-    show_trace = st.toggle("Show agent trace", value=True)
+    show_trace = st.toggle("Show agent trace", value=True, help="Shows the trace under each search result. The 🧠 AI trace tab always has the full trace.")
     st.markdown(f"**AI model:** {'Gemini (' + MODELS[0] + ')' if API_KEY else 'offline rules (no key set)'}")
     st.caption(f"Catalog: {CATALOG_SOURCE}. Titles, brands, prices and images are real Myntra listings; colour, fabric, occasion "
                "and style are inferred from the text, and sizes and fit signals are simulated for this demo.")
     st.divider()
-    if st.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_side"):
-        S.view = "cart"; st.rerun()
+    st.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_side", on_click=open_cart)
 
-# ------------------------------------------------------------------ top bar: logo + search
+# ------------------------------------------------------------------ top bar: logo + search, then tabs
 with st.form("search", clear_on_submit=False, border=False):
     c0, c1, c2 = st.columns([1.5, 7, 1.1], vertical_alignment="center")
     c0.markdown('<div class="ss-logo">Search<b>Sense</b></div>', unsafe_allow_html=True)
@@ -168,33 +198,132 @@ with st.form("search", clear_on_submit=False, border=False):
     go = c2.form_submit_button("Search", use_container_width=True, type="primary")
 if go and q.strip():
     run_search(q.strip())
+    go_tab(TABS[0])
 
-EX = [("Rohan", "wite linnen shirt M", "Typo + size"),
-      ("Priya", "breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery", "Complex intent"),
-      ("Ananya", "high-waist straight jeans for office", "Size confidence"),
-      ("Ambiguous", "outfit for a wedding", "Asks one question"),
-      ("No match", "chanderi lehenga for a day wedding under ₹6,000", "Relaxes constraints"),
-      ("Lifestyle", "minimal table lamp for a small reading corner, warm light, under 2500", "Non-fashion"),
-      ("Skincare", "fragrance-free moisturiser for oily acne-prone skin that sits well under sunscreen under 800", "Personal care"),
-      ("Order help", "where is my order", "Out of scope")]
-cols = st.columns([0.55] + [1] * len(EX) + [1.15], vertical_alignment="center")
-cols[0].markdown('<div class="try">Try:</div>', unsafe_allow_html=True)
-for c, (lbl, ex, tip) in zip(cols[1:], EX):
-    if c.button(lbl, use_container_width=True, key="ex" + lbl, help=f"{tip}: {ex}"):
-        run_search(ex)
-        st.rerun()
-if cols[-1].button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top"):
-    S.view = "cart"; st.rerun()
+n1, n2, n3 = st.columns([6.2, 1.2, 1.1], vertical_alignment="center")
+with n1:
+    st.segmented_control("Section", TABS, key="tab", on_change=_tab_changed, label_visibility="collapsed")
+n2.button("🏠 All products", use_container_width=True, key="home_top", on_click=go_home)
+n3.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top", on_click=open_cart)
+
+# ------------------------------------------------------------------ test cases (scripted personas)
+TEST_CASES = [
+    dict(name="Rohan", icon="⌨️", tag="Stage 2 · typo", query="wite linnen shirt M",
+         tests="Spelling correction and a size in a short query.",
+         expect="“wite linnen” is fixed to “white linen” without asking; shirts stocked in M; fit badge on every card."),
+    dict(name="Priya", icon="🌸", tag="Stage 3 · complex intent",
+         query="breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery",
+         tests="Subjective words mapped to attributes, plus weather and occasion tools.",
+         expect="Breathable pastel ethnic sets under ₹6,000; the trace shows the Mumbai weather and day-wedding rules."),
+    dict(name="Ananya", icon="👖", tag="Stage 1 · fit", query="high-waist straight jeans for office",
+         tests="Fit agent when there is no size history.",
+         expect="Jeans with a low-confidence size badge. Open one and answer the fit question to get a confident size; "
+                "add two sizes to see the cart's ‘Keep only’ fix."),
+    dict(name="Ambiguous", icon="❓", tag="Stage 4 · clarify", query="outfit for a wedding",
+         tests="Asking one question only when the answer splits results.",
+         expect="One question: Ethnic, Western or Show both. Tapping an option re-runs the search."),
+    dict(name="No exact match", icon="⚖️", tag="Stage 5 · relax", query="chanderi lehenga for a day wedding under ₹6,000",
+         tests="Verifier loop relaxing a soft constraint.",
+         expect="No chanderi lehenga under ₹6,000, so fabric is relaxed while the budget is kept, and the app says so."),
+    dict(name="Lifestyle", icon="💡", tag="Non-fashion", query="minimal table lamp for a small reading corner, warm light, under 2500",
+         tests="Same agent on a home product.",
+         expect="A small warm-light lamp under ₹2,500; no size check because it is not clothing."),
+    dict(name="Skincare", icon="🧴", tag="Personal care",
+         query="fragrance-free moisturiser for oily acne-prone skin that sits well under sunscreen under 800",
+         tests="Needs-based constraints checked against product notes.",
+         expect="Only the oil-free, fragrance-free gel moisturiser passes every check."),
+    dict(name="Order help", icon="📦", tag="Stage 6 · out of scope", query="where is my order",
+         tests="Router spotting a non-search question.",
+         expect="No product search; hand-off to My orders → Track order."),
+    dict(name="Follow-up", icon="🔁", tag="Memory · refine", query="#2 but cheaper",
+         setup="breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery",
+         tests="Refining the previous search by pointing at a result.",
+         expect="Runs Priya's search, then “#2 but cheaper”: the budget drops below result #2's price and the style is kept."),
+]
+
+
+def run_case(case):
+    S.history, S.last_results = [], []   # each test case starts a fresh session
+    if case.get("setup"):
+        run_search(case["setup"])
+        run_search(case["query"], followup=True)
+    else:
+        run_search(case["query"])
+    S.q = case["query"]
+    go_tab(TABS[0])
+
+
+def view_tests():
+    st.markdown('<div class="tc-intro"><b>Test cases</b> · nine scripted shoppers that exercise each part of the pipeline. '
+                'Run one to see the results in 🏠 Shop; the 🧠 AI trace tab then shows every step the agent took.</div>', unsafe_allow_html=True)
+    for r0 in range(0, len(TEST_CASES), 3):
+        cols = st.columns(3)
+        for c, case in zip(cols, TEST_CASES[r0:r0 + 3]):
+            with c, st.container(border=True):
+                pre = f'<div class="tc-q">1. “{html.escape(case["setup"][:60])}…”<br>2. “{html.escape(case["query"])}”</div>' if case.get("setup") \
+                    else f'<div class="tc-q">“{html.escape(case["query"])}”</div>'
+                st.markdown(f'<span class="tcm"></span><div class="tc-head"><span class="tc-ic">{case["icon"]}</span>'
+                            f'<div><div class="tc-name">{html.escape(case["name"])}</div><span class="tc-tag">{html.escape(case["tag"])}</span></div></div>'
+                            f'{pre}<div class="tc-l">Tests</div><div class="tc-t">{html.escape(case["tests"])}</div>'
+                            f'<div class="tc-l">Expected</div><div class="tc-t">{html.escape(case["expect"])}</div>', unsafe_allow_html=True)
+                st.button("Run test", key="tc" + case["name"], use_container_width=True, type="primary", on_click=run_case, args=(case,))
+
+# ------------------------------------------------------------------ trace
+def render_trace(res):
+    r = res["route"]
+    st.markdown(f'<div class="step"><b>Router</b> · {html.escape(r["label"])} — {html.escape(r["reason"])}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="step"><b>Catalog</b> · {html.escape(CATALOG_SOURCE)}; ratings, sizes and fit data are not in the source data '
+                '(sizes and fit are simulated)</div>', unsafe_allow_html=True)
+    for name, arg, out in res["steps"]:
+        st.markdown(f'<div class="step"><b>{html.escape(name)}</b> · <span class="tool">{html.escape(str(arg))}</span><br>{html.escape(str(out))}</div>', unsafe_allow_html=True)
+    if res["kind"] != "help":
+        st.markdown('<div class="step"><b>Fit agent (Layer 2)</b> · size + confidence computed for every result from fit reviews and your profile. '
+                    'Fit signals and fit-review counts are simulated in this demo.</div>', unsafe_allow_html=True)
+
+
+def view_trace():
+    res = S.result
+    if not res:
+        st.info("No search yet. Search for something, or run one of the 🧪 Test cases, then come back here to see every step the agent took.")
+        return
+    r = res["route"]
+    stage = r["stage"] if r["stage"] != "agent" else res.get("intent", {}).get("stage", 1)
+    st.markdown(f'<div class="trace-q">“{html.escape(res["query"])}”</div>'
+                f'<div class="router">{pill(stage)}<span>{html.escape(r["label"])} · {res["t"]:.2f}s</span></div>', unsafe_allow_html=True)
+    t1, t2 = st.columns([1.15, 1])
+    with t1:
+        st.markdown('<div class="layer">Steps</div>', unsafe_allow_html=True)
+        render_trace(res)
+    with t2:
+        if res["kind"] == "agent":
+            st.markdown('<div class="layer">Verifier: each result against each constraint</div>', unsafe_allow_html=True)
+            if res["items"]:
+                rows = [{"#": k + 1, "product": p["name"][:34], "₹": p["price"],
+                         **{n: ("✓" if ok else "✕") for n, ok, _ in checks}} for k, (p, checks) in enumerate(res["items"])]
+                st.dataframe(rows, hide_index=True, use_container_width=True)
+            else:
+                st.caption("Nothing passed the hard constraints.")
+            st.markdown('<div class="layer">Structured intent (what the model returned)</div>', unsafe_allow_html=True)
+            st.json(res["intent"], expanded=True)
+        elif res["kind"] == "keyword":
+            st.markdown('<div class="layer">Keyword results</div>', unsafe_allow_html=True)
+            st.dataframe([{"#": k + 1, "product": PRODUCTS[i]["name"][:60], "₹": PRODUCTS[i]["price"]} for k, i in enumerate(res["items"])],
+                         hide_index=True, use_container_width=True)
+        else:
+            st.caption("Out-of-scope query: no catalog search ran.")
 
 # ------------------------------------------------------------------ views
-def product_card(p, i=None, checks=None, intent=None):
+def product_card(p, i=None, checks=None, intent=None, numbered=True):
     """One grid card: image with rating, brand, name, price, why line, fit badge, honest-note chip, View/Add."""
     with st.container(border=True):
-        why = f'<div class="why">✦ {html.escape(A.why_this(p, intent))}</div>' if intent else '<div class="why"></div>'
+        if intent:
+            why = f'<div class="why">✦ {html.escape(A.why_this(p, intent))}</div>'
+        else:
+            why = f'<div class="why sub">{html.escape(" · ".join(x for x in (p["type"].title(), p["colour"]) if x))}</div>'
         ck = ""
         if checks:
             ck = '<div class="chk">' + " ".join(("✓ " if ok else "✕ ") + html.escape(n) for n, ok, _ in checks) + "</div>"
-        st.markdown(f'<span class="pc"></span>{image_block(p, i)}<div class="pbrand">{html.escape(p["brand"])}</div>'
+        st.markdown(f'<span class="pc"></span>{image_block(p, i if numbered else None)}<div class="pbrand">{html.escape(p["brand"])}</div>'
                     f'<div class="pname" title="{html.escape(p["name"])}">{html.escape(p["name"])}</div>{price_block(p)}{why}'
                     f'<div class="foot">{fit_badge(p)}<br>{risky_note(p)}{ck}</div>', unsafe_allow_html=True)
         b1, b2 = st.columns(2)
@@ -205,35 +334,74 @@ def product_card(p, i=None, checks=None, intent=None):
             size = (fa or {}).get("size") or p["sizes"][min(2, len(p["sizes"]) - 1)]
             S.cart.append(dict(id=p["id"], size=size)); st.toast(f"Added {p['name']} ({size})"); st.rerun()
 
-def grid(items, intent=None, ncols=4):
+def grid(items, intent=None, ncols=4, numbered=True):
     for r0 in range(0, len(items), ncols):
         cols = st.columns(ncols)
         for k, it in enumerate(items[r0:r0 + ncols]):
             p, checks = (it if isinstance(it, tuple) else (it, None))
             with cols[k]:
-                product_card(p, r0 + k + 1, checks, intent)
+                product_card(p, r0 + k + 1, checks, intent, numbered)
+
+
+@st.cache_data(show_spinner=False)
+def cached_browse(dept, ptype, sort):
+    return A.browse(dept, ptype, sort)
+
+
+def _reset_home():
+    S.home_n = 24
+
+
+def view_home():
+    st.markdown(f'<div class="hero"><div><div class="hero-t">Shop {len(PRODUCTS):,} products</div>'
+                '<div class="hero-s">Browse below, or describe what you need in the search bar: AI mode understands occasions, '
+                'weather, budget and fit. Not sure what to try? Open 🧪 Test cases.</div></div></div>', unsafe_allow_html=True)
+    f1, f2, f3 = st.columns([4.2, 1.6, 1.4], vertical_alignment="bottom")
+    with f1:
+        dept = st.segmented_control("Department", list(A.DEPARTMENTS), default="All", key="dept", on_change=_reset_home) or "All"
+    types = cached_browse_types(dept)
+    ptype = f2.selectbox("Type", ["All types"] + types, key=f"ptype_{dept}", on_change=_reset_home)
+    sort = f3.selectbox("Sort", ["Featured", "Price: low to high", "Price: high to low"], key="sort", on_change=_reset_home)
+    ids = cached_browse(dept, None if ptype == "All types" else ptype, sort)
+    n = min(S.home_n, len(ids))
+    st.markdown(f'<div class="rescount"><b>{len(ids):,}</b> products · showing {n}</div>', unsafe_allow_html=True)
+    grid([PRODUCTS[i] for i in ids[:n]], numbered=False)
+    if n < len(ids):
+        _, mid, _ = st.columns([2, 1, 2])
+        mid.button("Show more", use_container_width=True, key="more", on_click=lambda: S.__setitem__("home_n", S.home_n + 24))
+
+
+@st.cache_data(show_spinner=False)
+def cached_browse_types(dept):
+    return A.browse_types(dept)
+
 
 def view_search():
     res = S.result
     if not res:
-        st.markdown('<div class="empty"><h3>What are you shopping for?</h3>Type a short query, or describe what you need in your own words. '
-                    'Every product gets a size recommendation either way.</div>', unsafe_allow_html=True)
+        view_home()
         return
     r = res["route"]
     stage = r["stage"] if r["stage"] != "agent" else res.get("intent", {}).get("stage", 1)
     fixes = "".join(f' &nbsp;<small>“{html.escape(a)}” → <b>{html.escape(b)}</b></small>' for a, b in r.get("fixes", []))
-    st.markdown(f'<div class="router">{pill(stage)}<span>{html.escape(r["reason"])} · {res["t"]:.1f}s</span>{fixes}</div>',
-                unsafe_allow_html=True)
+    rc1, rc2 = st.columns([6, 1.1], vertical_alignment="center")
+    rc1.markdown(f'<div class="router">{pill(stage)}<span>{html.escape(r["reason"])} · {res["t"]:.1f}s</span>{fixes}</div>',
+                 unsafe_allow_html=True)
+    rc2.button("🧠 AI trace", use_container_width=True, key="open_trace", on_click=go_tab, args=(TABS[2],))
 
     if res["kind"] == "help":
         st.warning("This looks like an order question, not a product search. Handing you to Help: **My orders → Track order**.")
+        if show_trace:
+            with st.expander("🧠 Agent trace: what SearchSense did", expanded=False):
+                render_trace(res)
         return
     if res["kind"] == "keyword":
         if r.get("fixes"):
             u1, u2 = st.columns([3, 2])
             u1.markdown(f"Showing results for **{html.escape(r['query'])}**")
             if u2.button(f"Search instead for “{res['query']}”", key="undo"):
-                S.result = dict(res, route=dict(r, fixes=[], stage=0, reason="Undo: original words"), items=[p["id"] for p in A.keyword_search(res["query"])]); st.rerun()
+                items = [p["id"] for p in A.keyword_search(res["query"], max_results=24)]
+                S.result = dict(res, route=dict(r, fixes=[], stage=0, reason="Undo: original words"), items=items); st.rerun()
         items = [PRODUCTS[i] for i in res["items"]]
         S.last_results = res["items"]
         if items:
@@ -241,6 +409,9 @@ def view_search():
             grid(items)
         else:
             st.warning("No results. Try describing what you need.")
+        if show_trace:
+            with st.expander("🧠 Agent trace: what SearchSense did", expanded=False):
+                render_trace(res)
         return
 
     intent = res["intent"]
@@ -263,7 +434,7 @@ def view_search():
     items, relaxed = res["items"], res["relaxed"]
     if removed:
         it2 = A.apply_removed(intent, removed) if hasattr(A, "apply_removed") else apply_removed(intent, removed)
-        items, relaxed, _, _ = A.search(it2)
+        items, relaxed, _, _ = A.search(it2, max_results=8)
 
     if relaxed:
         what = ", ".join(f"{k.replace('_',' ')} ({', '.join(v) if isinstance(v, list) else v})" for k, v in relaxed)
@@ -286,17 +457,12 @@ def view_search():
 
     if show_trace:
         with st.expander("🧠 Agent trace: what SearchSense did", expanded=False):
-            st.markdown(f'<div class="step"><b>Router</b> · {html.escape(r["label"])} — {html.escape(r["reason"])}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="step"><b>Catalog</b> · {html.escape(CATALOG_SOURCE)}; ratings, sizes and fit data are not in the source data (sizes and fit are simulated)</div>', unsafe_allow_html=True)
-            for name, arg, out in res["steps"]:
-                st.markdown(f'<div class="step"><b>{html.escape(name)}</b> · <span class="tool">{html.escape(str(arg))}</span><br>{html.escape(str(out))}</div>', unsafe_allow_html=True)
-            st.markdown('<div class="step"><b>Fit agent (Layer 2)</b> · size + confidence computed for every result from fit reviews and your profile. '
-                        'Fit signals and fit-review counts are simulated in this demo.</div>', unsafe_allow_html=True)
+            render_trace(res)
             st.json(intent, expanded=False)
 
 def view_product():
     p = PRODUCTS[S.pid]
-    if st.button("← Back to results"):
+    if st.button("← Back"):
         S.view = "search"; st.rerun()
     c1, c2 = st.columns([1, 1.4])
     with c1:
@@ -343,7 +509,7 @@ def view_product():
             S.cart.append(dict(id=p["id"], size=size)); st.toast("Added to cart"); st.rerun()
 
 def view_cart():
-    if st.button("← Back to results"):
+    if st.button("← Back"):
         S.view = "search"; st.rerun()
     st.markdown("### Your cart")
     if not S.cart:
@@ -378,4 +544,9 @@ def view_cart():
     if st.button("Place order (demo)", type="primary"):
         st.balloons(); st.success("Order placed (demo). Fewer surprises, fewer returns.")
 
-{"search": view_search, "product": view_product, "cart": view_cart}[S.view]()
+if S.tab == TABS[1]:
+    view_tests()
+elif S.tab == TABS[2]:
+    view_trace()
+else:
+    {"search": view_search, "product": view_product, "cart": view_cart}[S.view]()
