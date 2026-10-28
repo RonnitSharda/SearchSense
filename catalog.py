@@ -1,4 +1,14 @@
-"""Demo catalog for the SearchSense MVP. All products, prices and reviews are illustrative."""
+"""Catalog for the SearchSense MVP.
+
+* 25 hand-written demo products (illustrative: prices, reviews and fit data are made up). They keep the
+  scripted demo scenarios reliable.
+* ~5k real Myntra product listings loaded from data/myntra_catalog.csv.gz (built by build_catalog.py from the
+  Kaggle dataset nirokey/myntra-fashion-products). Title, brand, price, image URL and gender are real; type, colour,
+  fabric, style, occasion, time and pairing are derived from the title/description with keyword rules; sizes and
+  fit signals are SIMULATED (no ratings, MRP or fit reviews exist in the source data).
+If the data file is missing the app falls back to the 25 demo products only.
+"""
+import csv, gzip, os
 
 BREATHABLE = {"cotton", "linen", "chanderi", "mul cotton", "khadi", "cotton-silk", "rayon"}
 HEAVY = {"velvet", "silk", "brocade", "georgette", "denim", "polyester"}
@@ -119,7 +129,35 @@ P = [
       notes=["No white cast", "Mild fragrance"], reviews=["Matte finish", "Good for humid weather"]),
 ]
 
+for _p in P:
+    _p.update(source="demo", fit_sim=True, image="", mrp=None)   # demo fit data is illustrative too
 PRODUCTS = {p["id"]: p for p in P}
+
+DATA_FILE = os.environ.get("SEARCHSENSE_CATALOG") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "myntra_catalog.csv.gz")
+
+
+def _load_myntra(path):
+    out = []
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
+        for r in csv.DictReader(f):
+            out.append(dict(
+                id=r["id"], name=r["name"], brand=r["brand"], gender=r["gender"], category=r["category"], type=r["type"],
+                style=r["style"], colour=r["colour"], colour_family=r["colour_family"], fabric=r["fabric"], price=int(r["price"]),
+                occasions=r["occasions"].split("|"), time=r["time"], pairs=r["pairs"], sizes=r["sizes"].split("|"),
+                fit_signal=int(r["fit_signal"]), fit_reviews=int(r["fit_reviews"]), fit_sim=r["fit_sim"] == "1",
+                rating=None, mrp=None, swatch=r["swatch"], image=r["image"], notes=[n for n in r["notes"].split("|") if n],
+                reviews=[], source="myntra"))
+    return out
+
+
+CATALOG_SOURCE = "demo only (data/myntra_catalog.csv.gz not found)"
+if os.path.exists(DATA_FILE):
+    try:
+        _rows = _load_myntra(DATA_FILE)
+        PRODUCTS.update({p["id"]: p for p in _rows})
+        CATALOG_SOURCE = f"{len(P)} demo + {len(_rows):,} Myntra listings"
+    except Exception as e:  # corrupt / partial file: never break the app
+        CATALOG_SOURCE = f"demo only (could not read Myntra data: {str(e)[:60]})"
 
 # Size anchors from other brands (illustrative brand-to-platform offsets)
 ANCHOR_BRANDS = {"Zara": 0, "H&M": 0, "Uniqlo": +1, "Levi's": 0, "W": -1, "Biba": 0, "FabIndia": 0, "None / not sure": None}

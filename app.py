@@ -1,6 +1,6 @@
 import os, re, time, html
 import streamlit as st
-from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE
+from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE, CATALOG_SOURCE
 import agent as A
 from ui import CSS, image_block, price_block
 
@@ -153,7 +153,8 @@ with st.sidebar:
     st.divider()
     show_trace = st.toggle("Show agent trace", value=True)
     st.markdown(f"**AI model:** {'Gemini (' + MODELS[0] + ')' if API_KEY else 'offline rules (no key set)'}")
-    st.caption("Demo catalog: 25 illustrative products across fashion, lifestyle and personal care. Fit reviews are simulated.")
+    st.caption(f"Catalog: {CATALOG_SOURCE}. Titles, brands, prices and images are real Myntra listings; colour, fabric, occasion "
+               "and style are inferred from the text, and sizes and fit signals are simulated for this demo.")
     st.divider()
     if st.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_side"):
         S.view = "cart"; st.rerun()
@@ -286,6 +287,7 @@ def view_search():
     if show_trace:
         with st.expander("🧠 Agent trace: what SearchSense did", expanded=False):
             st.markdown(f'<div class="step"><b>Router</b> · {html.escape(r["label"])} — {html.escape(r["reason"])}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="step"><b>Catalog</b> · {html.escape(CATALOG_SOURCE)}; ratings, sizes and fit data are not in the source data (sizes and fit are simulated)</div>', unsafe_allow_html=True)
             for name, arg, out in res["steps"]:
                 st.markdown(f'<div class="step"><b>{html.escape(name)}</b> · <span class="tool">{html.escape(str(arg))}</span><br>{html.escape(str(out))}</div>', unsafe_allow_html=True)
             st.markdown('<div class="step"><b>Fit agent (Layer 2)</b> · size + confidence computed for every result from fit reviews and your profile. '
@@ -300,16 +302,20 @@ def view_product():
     with c1:
         st.markdown(image_block(p, tall=True), unsafe_allow_html=True)
     with c2:
+        rating = f"{p['rating']}★" if p.get("rating") else ""
+        meta = " · ".join(x for x in (p["fabric"].title(), p["colour"], ", ".join(p["occasions"]), rating) if x)
         st.markdown(f"<div class='pbrand' style='font-size:18px'>{html.escape(p['brand'])}</div>"
                     f"<h3 style='margin:0;font-weight:400;color:var(--mute)'>{html.escape(p['name'])}</h3>"
                     f"<div style='font-size:20px;margin:6px 0'>{price_block(p)}</div>"
-                    f"<div class='why'>{p['fabric'].title()} · {html.escape(p['colour'])} · {html.escape(', '.join(p['occasions']))} · {p['rating']}★</div>", unsafe_allow_html=True)
+                    f"<div class='why'>{html.escape(meta)}</div>", unsafe_allow_html=True)
         st.markdown('<div class="layer">Size &amp; fit</div>', unsafe_allow_html=True)
         fa = A.fit_agent(p, S.profile)
         if fa:
             if fa["size"]:
                 st.markdown(f'<span class="badge b-{fa["confidence"]}" style="font-size:14px">Recommended: {fa["size"]} · {fa["confidence"]} confidence</span>'
                             f'<div class="why">{html.escape(fa["reason"])}</div>', unsafe_allow_html=True)
+            if fa.get("simulated"):
+                st.caption("Demo note: fit reviews and available sizes are simulated, not real shopper data.")
             if fa.get("ask"):
                 st.markdown(f"**One quick fit question:** {fa['ask']}")
                 a1, a2, a3 = st.columns([2, 1, 1])
@@ -326,7 +332,10 @@ def view_product():
         st.markdown('<div class="layer">Honest notes from reviews</div>', unsafe_allow_html=True)
         for n in p["notes"]:
             st.markdown(f'<span class="note">⚠ {html.escape(n)}</span>', unsafe_allow_html=True)
-        st.caption("Reviews: " + " · ".join(f"“{r}”" for r in p["reviews"]))
+        if p["reviews"]:
+            st.caption("Reviews: " + " · ".join(f"“{r}”" for r in p["reviews"]))
+        elif not p["notes"]:
+            st.caption("No review notes for this listing.")
         rec = (fa or {}).get("size")
         idx = p["sizes"].index(rec) if rec in p["sizes"] else 0
         size = st.radio("Size", p["sizes"], index=idx, horizontal=True)

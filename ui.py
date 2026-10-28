@@ -111,9 +111,9 @@ def silhouette_key(p):
 
 
 def image_block(p, idx=None, tall=False):
-    """Product image: real photo if the item has one, else a tinted silhouette. Always renders the fallback behind the photo."""
+    """Product image: real photo if the item has one, else a tinted silhouette. The tinted silhouette always renders behind the photo, so a dead image URL shows the silhouette (no onerror: Streamlit's React renderer rejects it)."""
     sw = p["swatch"]
-    img = f'<img src="{html.escape(p["image"])}" loading="lazy" onerror="this.remove()">' if p.get("image") else ""
+    img = f'<img src="{html.escape(p["image"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if p.get("image") else ""
     rate = f'<span class="rate">{p["rating"]} <i>★</i></span>' if p.get("rating") else ""
     num = f'<span class="idx">#{idx}</span>' if idx else ""
     style = f"background:linear-gradient(160deg,{sw}55,{sw})" + (";aspect-ratio:3/3.8" if tall else "")

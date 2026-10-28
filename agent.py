@@ -1,21 +1,32 @@
 """SearchSense agent: router, Gemini intent agent, tools, verifier, fit layer."""
-import json, re, time, difflib
+import json, re, time, difflib, zlib, collections
+import numpy as np
 import requests
 from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
                      WEATHER, OCCASION_RULES)
 
 # ------------------------------------------------------------------ vocabulary
-VOCAB = set()
+_FIELDS = ("name", "type", "colour", "fabric", "brand", "style", "colour_family", "gender")
+_TOKEN_FREQ = collections.Counter()
+_DEMO_TOKENS = set()
 for p in PRODUCTS.values():
-    for f in ("name", "type", "colour", "fabric", "brand", "style", "colour_family", "gender"):
-        VOCAB.update(re.findall(r"[a-z]+", str(p[f]).lower()))
-VOCAB.update("""for a an the in and or with under below above size sizes men women mens womens
+    toks = {w for f in _FIELDS for w in re.findall(r"[a-z]+", str(p[f]).lower())}
+    _TOKEN_FREQ.update(toks)
+    if p.get("source") == "demo":
+        _DEMO_TOKENS |= toks
+# words from the data must appear on >= 3 products (or be demo words), so one-off brand fragments aren't "correct" spellings
+_STATIC_VOCAB = _DEMO_TOKENS | set("""for a an the in and or with under below above size sizes men women mens womens
  kurta kurti shirt jeans lehenga saree dress set lamp moisturiser sunscreen jacket white black blue
  green pink yellow red beige ivory pastel cotton linen silk wedding haldi office casual party festive
  that pairs pair jewellery silver gold breathable humid daytime day evening mumbai delhi pune
  under rs inr high waist straight wear outfit ethnic western oily acne prone skin fragrance free sits
  well sunscreen minimal reading corner small warm light lamp table jewelry jewellery something look
- humid breathable daytime pastel sangeet haldi brunch moisturizer moisturiser chanderi""".split())
+ humid breathable daytime pastel sangeet haldi brunch moisturizer moisturiser chanderi""".split())   # hand-written words win spelling ties
+VOCAB = {w for w, n in _TOKEN_FREQ.items() if n >= 3} | _STATIC_VOCAB
+# spelling candidates are bucketed by first letter so correction stays fast with thousands of words
+_VOCAB_BY_FIRST = collections.defaultdict(list)
+for _w in VOCAB:
+    _VOCAB_BY_FIRST[_w[0]].append(_w)
 
 SUBJECTIVE = {"breathable", "humid", "pairs", "pair", "jewellery", "occasion", "wedding", "haldi", "sangeet",
               "daytime", "evening", "office", "party", "festive", "brunch", "minimal", "cosy", "cozy", "warm",
@@ -32,7 +43,9 @@ def correct_tokens(q):
         t = tok.lower()
         if len(t) <= 2 or t in VOCAB or not t.isalpha():
             out.append(tok); continue
-        m = difflib.get_close_matches(t, VOCAB, n=1, cutoff=0.78)
+        m = difflib.get_close_matches(t, _VOCAB_BY_FIRST.get(t[0], []), n=6, cutoff=0.78)
+        # best similarity first; among near-equal candidates prefer the commoner word ("wite" -> white, not write)
+        m = sorted(m, key=lambda w: (-round(difflib.SequenceMatcher(None, t, w).ratio(), 2), -_TOKEN_FREQ[w] - 10**6 * (w in _STATIC_VOCAB)))
         if m and m[0] != t:
             out.append(m[0]); fixes.append((tok, m[0]))
         else:
@@ -62,12 +75,12 @@ def route(query):
 # ------------------------------------------------------------------ Gemini
 ALLOWED = dict(
     category=["fashion", "lifestyle", "personal care"],
-    style=["ethnic", "western", "minimal", "boho", "skincare"],
+    style=["ethnic", "western", "minimal", "boho", "skincare", "beauty"],
     gender=["women", "men", "unisex"],
     occasion=["wedding", "haldi", "festive", "office", "casual", "party", "brunch", "home", "daily"],
     time=["day", "evening", "any"],
     colour_family=["pastel", "bright", "dark", "neutral"],
-    fabrics=sorted({p["fabric"] for p in PRODUCTS.values()}),
+    fabrics=sorted({p["fabric"] for p in PRODUCTS.values() if p["fabric"]}),
     types=sorted({p["type"] for p in PRODUCTS.values()}),
     pairs=["silver", "gold", "any"],
 )
@@ -127,7 +140,10 @@ def rule_parse(query, history=None):
     if re.search(r"\b(men|mens|man|him)\b", q): hard["gender"] = "men"
     elif re.search(r"\b(women|womens|her|she)\b", q) or any(w in q for w in ["lehenga", "saree", "anarkali", "sharara", "dress"]): hard["gender"] = "women"
     for t in ALLOWED["types"]:
-        if t.split()[0] in q: hard["types"].append(t)
+        if re.search(rf"\b{re.escape(t)}s?\b", q): hard["types"].append(t)
+    if not hard["types"]:  # "anarkali" -> "anarkali set": a first word that identifies exactly one type
+        first = collections.Counter(t.split()[0] for t in ALLOWED["types"])
+        hard["types"] = [t for t in ALLOWED["types"] if first[t.split()[0]] == 1 and re.search(rf"\b{re.escape(t.split()[0])}s?\b", q)]
     if "ethnic" in q or any(w in q for w in ["kurta", "lehenga", "saree", "anarkali"]): hard["style"] = "ethnic"
     elif "western" in q or "jeans" in q or "dress" in q: hard["style"] = "western"
     for o in ALLOWED["occasion"]:
@@ -201,17 +217,31 @@ def enrich(intent):
     return intent, calls
 
 
+def _type_match(h_types, ptype):
+    """Hard type filter: exact type, or the filter's head word is a whole word of the product type ('kurta' ~ 'kurta set')."""
+    words = ptype.split()
+    return ptype in h_types or any(t.split()[0] in words for t in h_types)
+
+
 def _hard_ok(p, h, drop=()):
+    """Per-product hard-constraint check (reference implementation; search() uses the vectorised masks below)."""
     reasons = []
     if h.get("category") and p["category"] != h["category"]: return False, ["category"]
     if h.get("gender") and p["gender"] not in (h["gender"], "unisex"): return False, ["gender"]
     if h.get("budget_max") and p["price"] > h["budget_max"] and "budget" not in drop: return False, ["budget"]
-    if h.get("types") and "types" not in drop and p["type"] not in h["types"] and not any(t.split()[0] in p["type"] for t in h["types"]):
+    if h.get("types") and "types" not in drop and not _type_match(h["types"], p["type"]):
         return False, ["type"]
     if h.get("style") and h["style"] in ("ethnic", "western") and p["style"] != h["style"]: return False, ["style"]
     if h.get("size") and p["sizes"] != ["Free"] and h["size"] not in p["sizes"] and "size" not in drop:
         return False, ["size"]
     return True, reasons
+
+
+def _need_ok(p, n):
+    blob = (" ".join(p["notes"] + p["reviews"]) + p["name"]).lower()
+    return {"oily": "oil" in blob or "oily" in blob, "acne": "comedogenic" in blob or "oily" in blob,
+            "fragrance-free": "fragrance-free" in blob, "sunscreen": "sunscreen" in blob or "spf" in blob,
+            "warm light": "warm" in blob, "small": "small" in blob or "compact" in blob}.get(n, True)
 
 
 def check_soft(p, s):
@@ -228,12 +258,97 @@ def check_soft(p, s):
     if s.get("pairs") and s["pairs"] != "any":
         checks.append(("pairs with " + s["pairs"], p["pairs"] in (s["pairs"], "any"), p["pairs"]))
     for n in s.get("needs") or []:
-        blob = (" ".join(p["notes"] + p["reviews"]) + p["name"]).lower()
-        ok = {"oily": "oil" in blob or "oily" in blob, "acne": "comedogenic" in blob or "oily" in blob,
-              "fragrance-free": "fragrance-free" in blob, "sunscreen": "sunscreen" in blob or "spf" in blob,
-              "warm light": "warm" in blob, "small": "small" in blob or "compact" in blob}.get(n, True)
-        checks.append((n, ok, ""))
+        checks.append((n, _need_ok(p, n), ""))
     return checks
+
+
+# ------------------------------------------------------------------ indices (built once at import)
+# Everything the search loop needs is turned into integer / boolean numpy arrays, so a query over thousands of
+# products costs a few vector operations instead of a Python loop per product.
+_PL = list(PRODUCTS.values())            # position -> product
+_N = len(_PL)
+
+
+def _coded(field):
+    vals = [p[field] for p in _PL]
+    m = {v: i for i, v in enumerate(sorted(set(vals)))}
+    return np.array([m[v] for v in vals], dtype=np.int32), m
+
+
+_CAT, _CAT_M = _coded("category")
+_GEN, _GEN_M = _coded("gender")
+_STY, _STY_M = _coded("style")
+_TYP, _TYP_M = _coded("type")
+_FAB, _FAB_M = _coded("fabric")
+_CFAM, _CFAM_M = _coded("colour_family")
+_TIME, _TIME_M = _coded("time")
+_PAIR, _PAIR_M = _coded("pairs")
+_BRAND, _ = _coded("brand")
+_PRICE = np.array([p["price"] for p in _PL], dtype=np.int64)
+# rated products rank above unrated ones (the Myntra data has no ratings); the jitter is a stable tie-break
+_RATING = np.array([(p.get("rating") or 0) / 10 for p in _PL])
+_JITTER = np.array([zlib.crc32(p["id"].encode()) / 2**32 * 0.05 for p in _PL])
+_FREE = np.array([p["sizes"] == ["Free"] for p in _PL])
+_SIZE_M = {}
+_OCC_M = {}
+for _i, _p in enumerate(_PL):
+    for _sz in _p["sizes"]:
+        _SIZE_M.setdefault(_sz.upper(), np.zeros(_N, bool))[_i] = True
+    for _o in _p["occasions"]:
+        _OCC_M.setdefault(_o, np.zeros(_N, bool))[_i] = True
+_NEED_M = {}
+_ZERO = np.zeros(_N, bool)
+
+
+def _isin(codes, mapping, values):
+    ids = [mapping[v] for v in values if v in mapping]
+    return np.isin(codes, ids) if ids else _ZERO
+
+
+def _hard_mask(h, drop=()):
+    m = np.ones(_N, bool)
+    if h.get("category"): m &= _CAT == _CAT_M.get(h["category"], -1)
+    if h.get("gender"): m &= (_GEN == _GEN_M.get(h["gender"], -1)) | (_GEN == _GEN_M.get("unisex", -1))
+    if h.get("budget_max") and "budget" not in drop: m &= _PRICE <= h["budget_max"]
+    if h.get("types") and "types" not in drop:
+        m &= _isin(_TYP, _TYP_M, [t for t in _TYP_M if _type_match(h["types"], t)])
+    if h.get("style") in ("ethnic", "western"): m &= _STY == _STY_M.get(h["style"], -1)
+    if h.get("size") and "size" not in drop: m &= _FREE | _SIZE_M.get(str(h["size"]).upper(), _ZERO)
+    return m
+
+
+def _soft_masks(s):
+    """One boolean array per active soft constraint (same semantics as check_soft)."""
+    out = []
+    if s.get("fabrics"): out.append(_isin(_FAB, _FAB_M, s["fabrics"]))
+    if s.get("colour_family"): out.append(_isin(_CFAM, _CFAM_M, s["colour_family"]))
+    if s.get("occasion") and s["occasion"] not in ("home", "daily"): out.append(_OCC_M.get(s["occasion"], _ZERO))
+    if s.get("time") and s["time"] != "any": out.append(_isin(_TIME, _TIME_M, [s["time"], "any"]))
+    if s.get("pairs") and s["pairs"] != "any": out.append(_isin(_PAIR, _PAIR_M, [s["pairs"], "any"]))
+    for n in s.get("needs") or []:
+        if n not in _NEED_M: _NEED_M[n] = np.array([_need_ok(p, n) for p in _PL])
+        out.append(_NEED_M[n])
+    return out
+
+
+def _all(masks, base):
+    m = base.copy()
+    for x in masks: m &= x
+    return m
+
+
+def _top(idx, score, k, per_brand):
+    """Best k positions by score, at most per_brand per brand (relaxed if that leaves fewer than k)."""
+    if not len(idx): return []
+    order = idx[np.argsort(-score[idx], kind="stable")]
+    picked, count, spill = [], collections.Counter(), []
+    for i in order:
+        if count[_BRAND[i]] < per_brand:
+            picked.append(i); count[_BRAND[i]] += 1
+            if len(picked) == k: break
+        else:
+            spill.append(i)
+    return picked + spill[:k - len(picked)]
 
 
 RELAX_ORDER = ["pairs", "time", "colour_family", "fabrics", "occasion"]
@@ -243,18 +358,13 @@ def search(intent, min_results=2, max_results=6):
     """Catalog search + verifier loop with constraint relaxation."""
     h, s = intent.get("hard", {}), dict(intent.get("soft", {}))
     relaxed, trace = [], []
+    base = _hard_mask(h)
+    prefer = _isin(_CFAM, _CFAM_M, s.get("prefer_colour_family") or [])
     for attempt in range(len(RELAX_ORDER) + 1):
-        cands = [p for p in PRODUCTS.values() if _hard_ok(p, h)[0]]
-        scored = []
-        for p in cands:
-            checks = check_soft(p, s)
-            passed = sum(1 for c in checks if c[1])
-            if all(c[1] for c in checks):
-                pref = 0.5 if p["colour_family"] in (s.get("prefer_colour_family") or []) else 0
-                scored.append((passed + pref + p["rating"] / 10, p, checks))
-        scored.sort(key=lambda x: -x[0])
-        trace.append(f"Attempt {attempt+1}: {len(cands)} pass hard constraints, {len(scored)} pass all soft checks")
-        if len(scored) >= min_results or (relaxed and scored) or attempt == len(RELAX_ORDER):
+        ok = _all(_soft_masks(s), base)
+        n_scored = int(ok.sum())
+        trace.append(f"Attempt {attempt+1}: {int(base.sum()):,} pass hard constraints, {n_scored:,} pass all soft checks")
+        if n_scored >= min_results or (relaxed and n_scored) or attempt == len(RELAX_ORDER):
             break
         # relax the weakest soft constraint that actually unblocks results
         present = [k for k in RELAX_ORDER if s.get(k)]
@@ -263,30 +373,39 @@ def search(intent, min_results=2, max_results=6):
         pick = present[0]
         for k in present:
             t = dict(s); t[k] = [] if isinstance(t[k], list) else None
-            n = sum(1 for p in cands if all(c[1] for c in check_soft(p, t)))
-            if n > len(scored):
+            if int(_all(_soft_masks(t), base).sum()) > n_scored:
                 pick = k; break
         relaxed.append((pick, s[pick])); s[pick] = [] if isinstance(s[pick], list) else None
         trace.append(f"Verifier: too few matches, relaxed '{pick}' and searched again")
+    score = _RATING + prefer * 0.5 + _JITTER
+    chosen = _top(np.flatnonzero(ok), score, max_results, per_brand=2)
     near = []
-    if not scored:  # show near misses on hard constraints, e.g. over budget
-        for p in PRODUCTS.values():
-            ok, why = _hard_ok(p, h, drop=("budget",))
-            if ok: near.append(p)
-    return [(p, c) for _, p, c in scored[:max_results]], relaxed, trace, near[:3]
+    if not len(chosen):  # show near misses on hard constraints, e.g. over budget: the cheapest few
+        idx = np.flatnonzero(_hard_mask(h, drop=("budget",)))
+        near = [_PL[i] for i in idx[np.argsort(_PRICE[idx], kind="stable")][:3]]
+    return [(_PL[i], check_soft(_PL[i], s)) for i in chosen], relaxed, trace, near
+
+
+def _kw_stem(t):
+    return t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t
+
+
+_KW_INDEX = collections.defaultdict(list)
+for _i, _p in enumerate(_PL):
+    for _t in {_kw_stem(w) for w in re.findall(r"[a-z]+", f"{_p['name']} {_p['type']} {_p['colour']} {_p['fabric']} {_p['gender']}".lower())}:
+        _KW_INDEX[_t].append(_i)
+_KW_INDEX = {t: np.array(v, dtype=np.int64) for t, v in _KW_INDEX.items()}
 
 
 def keyword_search(query, max_results=8):
-    toks = [t for t in re.findall(r"[a-z]+", query.lower()) if len(t) > 1]
+    toks = {_kw_stem(t) for t in re.findall(r"[a-z]+", query.lower()) if len(t) > 1}
     size = SIZE_RE.search(query)
-    res = []
-    for p in PRODUCTS.values():
-        blob = f"{p['name']} {p['type']} {p['colour']} {p['fabric']} {p['gender']}".lower()
-        hits = sum(1 for t in toks if t in blob)
-        if hits and (not size or size.group(1).upper() in p["sizes"] or p["sizes"] == ["Free"]):
-            res.append((hits + p["rating"] / 10, p))
-    res.sort(key=lambda x: -x[0])
-    return [p for _, p in res[:max_results]]
+    hits = np.zeros(_N)
+    for t in toks:
+        if t in _KW_INDEX: hits[_KW_INDEX[t]] += 1
+    ok = hits > 0
+    if size: ok &= _FREE | _SIZE_M.get(size.group(1).upper(), _ZERO)
+    return [_PL[i] for i in _top(np.flatnonzero(ok), hits + _RATING + _JITTER, max_results, per_brand=3)]
 
 
 def why_this(p, intent):
@@ -303,7 +422,7 @@ def why_this(p, intent):
         bits.append(f"₹{h['budget_max'] - p['price']:,} under budget" if p["price"] <= h["budget_max"] else "over budget")
     for n in s.get("needs") or []:
         bits.append(n.replace("-", " "))
-    return "; ".join(bits[:3]) or f"{p['rating']}★ {p['type']}"
+    return "; ".join(bits[:3]) or (f"{p['rating']}★ {p['type']}" if p.get("rating") else " · ".join(x for x in (p["type"], p["colour"]) if x))
 
 
 # ------------------------------------------------------------------ Layer 2: fit agent
@@ -342,7 +461,7 @@ def fit_agent(p, profile):
     ask = "Which brand fits you best, and in what size?" if conf == "low" else None
     if rec not in p["sizes"]:
         return dict(size=None, confidence="low", reason=f"Your likely size {rec} is not stocked", ask=None)
-    return dict(size=rec, confidence=conf, reason=reason, ask=ask)
+    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")))
 
 
 def precheckout(cart, profile):
