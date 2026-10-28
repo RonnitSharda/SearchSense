@@ -1,0 +1,111 @@
+"""Presentation layer for SearchSense: theme CSS and HTML fragments (no business logic)."""
+import html
+
+CSS = """
+<style>
+:root{--ink:#282C3F;--mute:#7E818C;--line:#EAEAEC;--bg:#F5F5F6;--pink:#FF3F6C;--pinkL:#FFF0F3;--navy:#1A1F5C;
+--green:#14958F;--greenL:#E6F5F4;--amber:#F59E0B;--amberL:#FFF6E0;--red:#D93A3A;--redL:#FDECEC;}
+html,body,[class*="css"]{font-family:"Inter","Segoe UI",system-ui,sans-serif;}
+header[data-testid="stHeader"]{background:transparent}
+.block-container{padding-top:2.2rem;max-width:1280px}
+section[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line)}
+
+/* top bar */
+.ss-top{display:flex;align-items:center;justify-content:space-between;padding:4px 2px 14px}
+.ss-logo{font-weight:800;font-size:26px;letter-spacing:-.8px;color:var(--ink)}
+.ss-logo b{color:var(--pink)}
+.ss-tag{font-size:13px;color:var(--mute)}
+.ss-badge{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--pink);background:var(--pinkL);border-radius:20px;padding:4px 10px}
+
+/* search input */
+div[data-testid="stForm"]{border:0;padding:0}
+div[data-testid="stTextInput"] input{height:52px;border-radius:12px;border:1.5px solid var(--line);background:var(--bg);font-size:16px;padding:0 18px}
+div[data-testid="stTextInput"] input:focus{border-color:var(--pink);background:#fff;box-shadow:0 0 0 3px #FF3F6C22}
+div[data-testid="stFormSubmitButton"] button,.stButton>button[kind="primary"]{height:52px;border-radius:12px;font-weight:700;background:var(--pink);border:0;color:#fff}
+div[data-testid="stFormSubmitButton"] button:hover,.stButton>button[kind="primary"]:hover{background:#E8335E;color:#fff}
+
+/* scenario pills */
+.try{font-size:12px;font-weight:700;letter-spacing:.8px;color:var(--mute);margin:10px 0 4px}
+.stButton>button[kind="secondary"]{border-radius:20px;border:1px solid var(--line);background:#fff;color:var(--ink);font-size:13px;padding:2px 10px;min-height:34px}
+.stButton>button[kind="secondary"]:hover{border-color:var(--pink);color:var(--pink)}
+
+/* router + AI understanding */
+.router{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12.5px;color:var(--mute);padding:8px 0}
+.pill{display:inline-block;border-radius:20px;padding:3px 11px;font-size:12px;font-weight:700}
+.p-navy{background:var(--navy);color:#fff}.p-pink{background:var(--pink);color:#fff}.p-amber{background:var(--amber);color:#3a2a00}
+.p-green{background:var(--green);color:#fff}.p-grey{background:#94969F;color:#fff}.p-red{background:var(--red);color:#fff}
+.aim{background:linear-gradient(135deg,#FFF0F3,#F4F1FF);border:1px solid #FFD6E0;border-radius:14px;padding:14px 18px;margin:6px 0 12px}
+.aim .t{color:var(--pink);font-weight:800;font-size:11.5px;letter-spacing:1px}
+.aim .i{color:var(--ink);font-size:16px;font-weight:600;margin-top:3px}
+.map{font-size:13px;color:#4A4E63;margin-top:5px}
+.relax{background:var(--amberL);border:1px solid #F8D98A;border-radius:12px;padding:10px 14px;font-size:14px;margin:8px 0}
+.layer{font-size:11px;font-weight:800;letter-spacing:1px;color:var(--mute);margin:14px 0 8px;text-transform:uppercase}
+.rescount{font-size:15px;color:var(--ink);margin:6px 0 10px}.rescount b{font-weight:800}
+
+/* product card (bordered streamlit container) */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc){border:1px solid var(--line);border-radius:14px;background:#fff;overflow:hidden;transition:box-shadow .15s}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc):hover{box-shadow:0 6px 22px #282C3F18}
+.pimg{position:relative;aspect-ratio:3/3.6;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;border-radius:10px;margin-bottom:8px}
+.pimg img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.pimg svg{margin-bottom:10px}
+.rate{position:absolute;left:8px;bottom:8px;background:#fffffff2;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700;color:var(--ink)}
+.rate i{color:#14958F;font-style:normal}
+.idx{position:absolute;left:8px;top:8px;background:var(--ink);color:#fff;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:700}
+.pbrand{font-weight:800;font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pname{font-size:13.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
+.price{font-weight:800;color:var(--ink);font-size:15px}
+.price s{font-weight:400;color:var(--mute);font-size:12.5px;margin-left:6px}
+.price em{font-style:normal;color:#E5833A;font-size:12.5px;font-weight:700;margin-left:6px}
+.why{font-size:12.5px;color:#4A4E63;line-height:1.35;margin:5px 0;min-height:17px}
+.badge{display:inline-block;font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:6px;margin:2px 0}
+.b-high{background:var(--greenL);color:#0E706B}.b-medium{background:var(--amberL);color:#8A5A00}.b-low{background:var(--redL);color:var(--red)}
+.note{font-size:11.5px;background:var(--amberL);color:#8A5A00;border-radius:6px;padding:3px 8px;display:inline-block;margin-top:4px}
+.chk{font-size:11px;color:var(--mute);margin-top:4px}
+
+/* trace + risks */
+.step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
+.step b{color:var(--ink)}
+.tool{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg);border-radius:6px;padding:2px 6px}
+.risk-high{border-left:5px solid var(--red);background:var(--redL);padding:10px 14px;border-radius:8px;margin:8px 0}
+.risk-medium{border-left:5px solid var(--amber);background:var(--amberL);padding:10px 14px;border-radius:8px;margin:8px 0}
+.risk-info{border-left:5px solid #94969F;background:var(--bg);padding:10px 14px;border-radius:8px;margin:8px 0;font-size:14px}
+.empty{text-align:center;padding:48px 10px;color:var(--mute)}
+.empty h3{color:var(--ink);margin-bottom:6px}
+</style>"""
+
+SILH = {
+    "garment": '<svg width="64" height="104" viewBox="0 0 46 72"><path d="M15 4h16l5 10-5 6 13 48H2L15 20l-5-6z" fill="#fff" opacity=".85"/></svg>',
+    "shirt": '<svg width="92" height="92" viewBox="0 0 60 60"><path d="M20 6l10 6 10-6 14 10-6 10-6-4v32H18V22l-6 4-6-10z" fill="#fff" opacity=".85"/></svg>',
+    "jeans": '<svg width="70" height="104" viewBox="0 0 40 64"><path d="M6 2h28l2 60H24l-4-40-4 40H4z" fill="#fff" opacity=".85"/></svg>',
+    "lamp": '<svg width="80" height="104" viewBox="0 0 50 64"><path d="M10 26 Q25 2 40 26z" fill="#fff" opacity=".9"/><rect x="23" y="26" width="4" height="28" fill="#fff" opacity=".9"/><rect x="14" y="54" width="22" height="5" rx="2" fill="#fff" opacity=".9"/></svg>',
+    "bottle": '<svg width="60" height="104" viewBox="0 0 36 64"><rect x="12" y="2" width="12" height="10" rx="2" fill="#fff" opacity=".9"/><rect x="6" y="12" width="24" height="48" rx="6" fill="#fff" opacity=".9"/></svg>',
+    "cushion": '<svg width="96" height="96" viewBox="0 0 60 60"><rect x="8" y="10" width="44" height="40" rx="10" fill="#fff" opacity=".85"/></svg>',
+}
+
+
+def silhouette_key(p):
+    t = p["type"]
+    if "shirt" in t or "jacket" in t: return "shirt"
+    if "jeans" in t: return "jeans"
+    if "lamp" in t: return "lamp"
+    if p["category"] == "personal care": return "bottle"
+    if "cushion" in t: return "cushion"
+    return "garment"
+
+
+def image_block(p, idx=None, tall=False):
+    """Product image: real photo if the item has one, else a tinted silhouette. Always renders the fallback behind the photo."""
+    sw = p["swatch"]
+    img = f'<img src="{html.escape(p["image"])}" loading="lazy" onerror="this.remove()">' if p.get("image") else ""
+    rate = f'<span class="rate">{p["rating"]} <i>★</i></span>' if p.get("rating") else ""
+    num = f'<span class="idx">#{idx}</span>' if idx else ""
+    style = f"background:linear-gradient(160deg,{sw}55,{sw})" + (";aspect-ratio:3/3.8" if tall else "")
+    return f'<div class="pimg" style="{style}">{SILH[silhouette_key(p)]}{img}{num}{rate}</div>'
+
+
+def price_block(p):
+    mrp = p.get("mrp")
+    if mrp and mrp > p["price"]:
+        off = round(100 * (mrp - p["price"]) / mrp)
+        return f'<div class="price">₹{p["price"]:,}<s>₹{mrp:,}</s><em>{off}% off</em></div>'
+    return f'<div class="price">₹{p["price"]:,}</div>'
