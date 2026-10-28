@@ -117,6 +117,21 @@ def test_prompt_and_schema():
     assert A.RESPONSE_SCHEMA["properties"]["query_type"]["enum"] == ["product_search", "out_of_catalog", "support", "other"]
 
 
+def test_fit_uses_own_returns():
+    returned_small = dict(usual_size="M", orders=[dict(size="30", outcome="returned · too small at the waist")])
+    fa = A.fit_agent(A.PRODUCTS["F12"], returned_small)              # true-to-size jeans
+    assert fa["size"] == "32" and fa["confidence"] == "medium" and "returned a 30" in fa["reason"]
+    fa = A.fit_agent(A.PRODUCTS["F12"], dict(waist="30", orders=returned_small["orders"]))
+    assert fa["size"] == "32"                                          # never the size they sent back as too small
+    assert A.fit_agent(A.PRODUCTS["F12"], dict(usual_size="M"))["size"] is None   # no history: no guess
+
+
+def test_complete_the_look():
+    look = A.complete_look(A.PRODUCTS["F11"])                          # women's jeans
+    assert look and all(p["type"] in A.PAIRS_WITH["jeans"] and p["gender"] in ("women", "unisex") for p in look)
+    assert A.complete_look(A.PRODUCTS["L01"]) == []                   # not clothing
+
+
 def test_vectorised_search_matches_reference():
     random.seed(1)
     types, fabs = sorted(A._TYP_M), [f for f in A._FAB_M if f]

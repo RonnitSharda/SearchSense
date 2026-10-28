@@ -200,11 +200,13 @@ def resolve_followup(q):
             return q2
     return q
 
-def run_search(q, followup=False):
+def run_search(q, followup=False, exact=False):
     t0 = time.time()
     S.removed_chips = []
     q_in = resolve_followup(q) if followup else q
     r = A.route(q_in if followup else q, ai=bool(API_KEY))
+    if exact:   # one-tap undo: search the shopper's exact words, no corrections, no AI
+        r = dict(stage=0, label="Undo: your exact words", query=q, fixes=[], reason="Searching your exact words, without spelling fixes")
     if followup and r["stage"] in (0, 2):
         r = dict(stage="agent", label="Follow-up: sent to agent with context", query=q_in, fixes=[], reason="Refinement of the previous search")
     res = dict(query=q, route=r, steps=[], t=0)
@@ -221,7 +223,7 @@ def run_search(q, followup=False):
                              f"{len(items)} matches; required words: {', '.join(info.get('words', [])) or 'none'} ({info.get('mode', '')}; "
                              "a colour also accepts close shades)" + (f"; fashion limited to {g} + unisex" if g else "")
                              + ". No AI call: short, specific queries skip Layer 1"))
-        if items or not API_KEY:
+        if items or not API_KEY or exact:
             res.update(kind="keyword", items=[p["id"] for p in items], kw_info=info,
                        kw_filters=A.keyword_filters(r["query"], S.profile.get("gender")))
             S.history.append(f"{r['query']} -> normal search")
@@ -546,8 +548,10 @@ TEST_CASES = [
          expect="Breathable pastel ethnic sets under ₹6,000; the trace shows the Mumbai weather and day-wedding rules."),
     dict(name="Ananya", icon="👖", tag="Stage 1 · fit", query="high-waist straight jeans for office", profile="Ananya",
          tests="Fit agent when there is no size history.",
-         expect="Jeans marked “Not sure of your size”: Add opens the product, which asks one fit question or shows the size "
-                "chart, never a guess. Answer it to get “32 recommended · runs small”; add two sizes to see the cart's ‘Keep only’ fix."),
+         expect="Ananya returned jeans in 30 for being too small, so the fit agent starts from 32 and adjusts for each pair "
+                "(“34 recommended · runs small”, medium confidence), offering one question to confirm. Switch to a new profile "
+                "to see the no-history case: “Not sure of your size”, the question and the size chart, never a guess. "
+                "Add two sizes to see the cart's ‘Keep only’ fix."),
     dict(name="Ambiguous", icon="❓", tag="Stage 4 · clarify", query="outfit for a wedding",
          tests="Asking one question only when the answer splits results.",
          expect="One question: Ethnic, Western or Show both. Tapping an option re-runs the search."),
@@ -1025,10 +1029,7 @@ def view_search():
             refine_bar(res, items)
             steps_strip(agent_steps(res, items))
         if r.get("fixes"):
-            if st.button(f"Search instead for “{res['query']}”", key="undo"):
-                ids = [p["id"] for p in A.keyword_search(res["query"], max_results=24, gender=S.profile.get("gender"))]
-                S.result = dict(res, route=dict(r, fixes=[], stage=0, reason="Undo: original words"), items=ids,
-                                kw_filters=A.keyword_filters(res["query"], S.profile.get("gender"))); st.rerun()
+            st.button(f"Search instead for “{res['query']}”", key="undo", on_click=run_search, args=(res["query"],), kwargs=dict(exact=True))
         if res.get("fallback"):
             st.info("AI mode is unavailable right now, so these are normal search results for your words.")
         S.last_results = items_ids
@@ -1064,6 +1065,9 @@ def view_search():
         showing += " <i>I’m not fully sure I understood, so normal search results for your words are further down too.</i>"
     with top:
         bubble(res["query"], _intent_summary(intent), _why_notes(res, intent), showing)
+        if intent.get("spelling"):   # Rohan: typos are fixed silently, with a one-tap undo
+            st.button(f"Search instead for “{res['query']}”", key="undo_ai", on_click=run_search, args=(res["query"],),
+                      kwargs=dict(exact=True))
         # clarifier (stage 4): the agent decided one answer would change the results, so it asks
         if intent.get("stage") == 4 and intent.get("clarify"):
             cq = intent["clarify"]
@@ -1144,7 +1148,8 @@ def view_product():
         if fa:
             if fa["size"] and not low:
                 head = f"Take {fa['size']}" if fa["confidence"] == "high" else f"{fa['size']} recommended · medium confidence"
-                note = "" if fa["confidence"] == "high" else f"; reviewers say it {fa['note'] if fa['note'] != 'true to size' else 'fits true to size'}"
+                note = "" if fa["confidence"] == "high" or fa.get("from_returns") else \
+                    f"; reviewers say it {fa['note'] if fa['note'] != 'true to size' else 'fits true to size'}"
                 st.markdown(f'<span class="badge b-{fa["confidence"]}" style="font-size:14px">{head}</span>'
                             f'<div class="why">{html.escape(fa["reason"])}{html.escape(note) if fa["confidence"] == "medium" else ""}</div>',
                             unsafe_allow_html=True)
@@ -1188,6 +1193,12 @@ def view_product():
         if st.button("Add to cart", type="primary", disabled=size is None, help="Pick a size first" if size is None else None):
             S.cart.append(dict(id=p["id"], size=size)); record_add(p, size, fa)
             st.toast("Added to cart"); st.rerun()
+    look = A.complete_look(p)
+    if look:
+        st.markdown('<div class="layer">👗 Complete the look · preview</div>', unsafe_allow_html=True)
+        st.caption("Pieces that usually go with this, matched by type, colour and budget from this catalog. "
+                   "Preview of the look builder on our roadmap; footwear and jewellery aren't in this catalog yet.")
+        grid(look, numbered=False)
 
 def view_cart():
     if st.button("← Back"):

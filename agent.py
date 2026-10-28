@@ -789,6 +789,35 @@ def recommend(prefs, gender=None, exclude=(), k=8):
     return [_PL[i] for i in _top(np.flatnonzero(ok), score + _RATING + _JITTER, k, per_brand=2)]
 
 
+# Look builder preview: what usually goes with each type, from types this catalog actually has
+# (no footwear or jewellery here, so pairings stay within clothing)
+PAIRS_WITH = {"kurta": ["palazzo", "dupatta", "leggings"], "kurta set": ["dupatta"], "anarkali set": ["dupatta"],
+              "lehenga": ["dupatta"], "salwar suit": ["dupatta"], "saree": [], "palazzo": ["kurta"],
+              "shirt": ["trousers", "jeans", "blazer"], "t-shirt": ["jeans", "shorts", "jacket"], "top": ["jeans", "skirt", "trousers"],
+              "dress": ["jacket"], "jeans": ["t-shirt", "shirt", "top"], "trousers": ["shirt", "t-shirt"], "shorts": ["t-shirt"],
+              "skirt": ["top"], "blazer": ["shirt", "trousers"], "jacket": ["t-shirt", "jeans"], "sweatshirt": ["jeans", "trousers"],
+              "kurta pyjama": ["nehru jacket"], "nehru jacket": ["kurta set", "kurta"], "sherwani": [], "jumpsuit": ["jacket"]}
+
+
+def complete_look(p, k=4):
+    """Items that go with p: a matching type, same gender (or unisex), neutral or same colour family, at most 1.5x its price."""
+    types = PAIRS_WITH.get(p["type"], [])
+    if p["category"] != "fashion" or not types:
+        return []
+    m = _isin(_TYP, _TYP_M, types) & (_PRICE <= max(p["price"] * 1.5, 500))
+    if p["gender"] in ("women", "men"):
+        m &= (_GEN == _GEN_M.get(p["gender"], -1)) | (_GEN == _GEN_M.get("unisex", -1))
+    match = _isin(_CFAM, _CFAM_M, ["neutral", p["colour_family"]])
+    m &= np.array([q["id"] != p["id"] for q in _PL])
+    # one of each pairing type first, matching colours preferred
+    score = match * 1.0 + _RATING + _JITTER
+    out = []
+    for t in types:
+        idx = np.flatnonzero(m & (_TYP == _TYP_M.get(t, -1)))
+        out += [_PL[i] for i in _top(idx, score, 2, per_brand=1)]
+    return out[:k]
+
+
 LABEL_PROMPT = build_label_prompt(ALLOWED["types"])
 
 
@@ -995,14 +1024,37 @@ def _scale(p):
     return WAIST_ORDER if p["sizes"][0].isdigit() else SIZE_ORDER
 
 
+def _return_bounds(scale, profile):
+    """The shopper's own returns on this size scale: 'returned · too small' in 30 means 32 or up; 'too loose' in 34 means 32 or down.
+    Returns (floor_idx, ceil_idx, note) or (None, None, None)."""
+    floor, ceil, notes = None, None, []
+    for o in profile.get("orders", []) or []:
+        out, size = o.get("outcome", ""), str(o.get("size", ""))
+        if not out.startswith("returned") or size not in scale:
+            continue
+        i = scale.index(size)
+        if "small" in out or "tight" in out:
+            floor = max(floor if floor is not None else -1, i + 1); notes.append(f"you returned a {size} for being too small")
+        elif any(w in out for w in ("loose", "big", "large")):
+            ceil = min(ceil if ceil is not None else len(scale), i - 1); notes.append(f"you returned a {size} for being too loose")
+    return floor, ceil, "; ".join(notes) or None
+
+
 def fit_agent(p, profile):
-    """Size recommendation with confidence. profile: usual_size, anchor_brand, anchor_size, past_brands."""
+    """Size recommendation with confidence. profile: usual_size, waist, anchor_brand, anchor_size, past_brands, orders.
+    The shopper's own returns (past orders) bound the recommendation: a size they sent back as too small is never suggested."""
     if p["category"] != "fashion" or p["sizes"] == ["Free"]:
         return None
     scale = _scale(p)
     base = profile.get("anchor_size") or profile.get("usual_size")
     if p["sizes"][0].isdigit():
         base = profile.get("waist") or None
+    floor, ceil, ret_note = _return_bounds(scale, profile)
+    from_returns = False
+    if (not base or base not in scale) and ret_note:   # no size given, but their returns say where they are
+        j = floor if floor is not None else ceil
+        if 0 <= j < len(scale):
+            base, from_returns = scale[j], True
     if not base or base not in scale:
         return dict(size=None, confidence="low", reason="No size history or anchor for you yet",
                     ask="Which brand fits you best, and in what size?")
@@ -1010,23 +1062,32 @@ def fit_agent(p, profile):
     offset = ANCHOR_BRANDS.get(profile.get("anchor_brand") or "", 0) or 0
     adj = -p["fit_signal"]  # runs small (-1) -> size up (+1)
     rec_idx = max(0, min(len(scale) - 1, idx + offset + adj))
+    clamped = False
+    if floor is not None and rec_idx < floor: rec_idx, clamped = min(floor, len(scale) - 1), True
+    if ceil is not None and rec_idx > ceil: rec_idx, clamped = max(ceil, 0), True
     rec = scale[rec_idx]
     has_anchor = bool(profile.get("anchor_brand") and profile.get("anchor_brand") != "None / not sure") or p["brand"] in profile.get("past_brands", [])
     if p["brand"] in profile.get("past_brands", []) and p["fit_reviews"] >= 20:
         conf = "high"
     elif p["fit_reviews"] >= 40 and has_anchor:
         conf = "high"
-    elif p["fit_reviews"] >= 20 or has_anchor:
+    elif p["fit_reviews"] >= 20 or has_anchor or from_returns:
         conf = "medium"
     else:
         conf = "low"
     signal = {-1: "runs small", 0: "true to size", 1: "runs large"}[p["fit_signal"]]
-    reason = f"{p['fit_reviews']} reviews mention fit: {signal}"
-    if rec != base: reason += f", so {('size up' if rec_idx > idx else 'size down')} from {base}"
-    ask = "Which brand fits you best, and in what size?" if conf == "low" else None
+    if from_returns:   # e.g. "you returned a 30 for being too small, so we start from 32; 12 reviews say it runs small, so 34"
+        reason = f"{ret_note[0].upper()}{ret_note[1:]}, so we start from {base}; {p['fit_reviews']} reviews say it {signal}" + \
+                 (f", so {rec}" if rec != base else "")
+    else:
+        reason = f"{p['fit_reviews']} reviews mention fit: {signal}"
+        if rec != base: reason += f", so {('size up' if rec_idx > idx else 'size down')} from {base}"
+        if ret_note and clamped: reason += f"; {ret_note}, so {rec}"
+    ask = "Which brand fits you best, and in what size?" if conf == "low" or from_returns else None
     if rec not in p["sizes"]:
         return dict(size=None, confidence="low", reason=f"Your likely size {rec} is not stocked", ask=None)
-    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")), note=signal, base=base)
+    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")), note=signal, base=base,
+                from_returns=bool(ret_note and (from_returns or clamped)))
 
 
 def precheckout(cart, profile):
