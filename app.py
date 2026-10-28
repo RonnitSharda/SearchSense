@@ -1087,6 +1087,32 @@ def view_search():
             render_trace(res)
             st.json(intent, expanded=False)
 
+PRODUCT_QUESTIONS = ["Is it see-through?", "Does it run small?", "Good for humid weather?", "How do I wash it?"]
+
+
+def _ask(p, q):
+    ans, src = A.ask_product(p, q, API_KEY, MODELS)
+    S.setdefault("qa", {}).setdefault(p["id"], []).append((q, ans, src))
+
+
+def product_qa(p):
+    """Ask the AI about this product (preview: answers come only from the listing and review notes we have)."""
+    st.markdown('<div class="layer">💬 Ask about this product</div>', unsafe_allow_html=True)
+    qc = st.columns(len(PRODUCT_QUESTIONS))
+    for c, q in zip(qc, PRODUCT_QUESTIONS):
+        c.button(q, key=f"pq{p['id']}{q}", use_container_width=True, on_click=_ask, args=(p, q))
+    with st.form(f"ask{p['id']}", clear_on_submit=True, border=False):
+        f1, f2 = st.columns([5, 1])
+        q = f1.text_input("Question", placeholder="e.g. Will the colour look different in daylight?", label_visibility="collapsed")
+        if f2.form_submit_button("Ask", use_container_width=True) and q.strip():
+            _ask(p, q.strip())
+    for q, ans, src in reversed(S.get("qa", {}).get(p["id"], [])[-4:]):
+        st.markdown(f'<div class="qa"><div class="qa-q">You: {html.escape(q)}</div><div class="qa-a">✦ {html.escape(ans)}</div>'
+                    f'<div class="qa-s">Based on: {html.escape(src)}</div></div>', unsafe_allow_html=True)
+    st.caption("Preview: answers use only this listing's details and the review notes we have. "
+               "With full review data, answers will quote shoppers who bought it.")
+
+
 def view_product():
     p = PRODUCTS[S.pid]
     if st.button("← Back"):
@@ -1144,6 +1170,7 @@ def view_product():
             st.caption("Reviews: " + " · ".join(f"“{r}”" for r in p["reviews"]))
         elif not p["notes"]:
             st.caption("No review notes for this listing.")
+        product_qa(p)
         rec = None if low else (fa or {}).get("size")
         idx = p["sizes"].index(rec) if rec in p["sizes"] else (None if low else 0)
         size = st.radio("Size", p["sizes"], index=idx, horizontal=True, key=f"sz{p['id']}{rec}")   # resets when the recommendation changes

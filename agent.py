@@ -822,6 +822,65 @@ def read_image(image_bytes, mime, api_key, models):
     return None, None, log
 
 
+# ------------------------------------------------------------------ product Q&A (preview)
+def _product_facts(p):
+    fit = {-1: "runs small", 0: "true to size", 1: "runs large"}.get(p.get("fit_signal"), "unknown")
+    return {"name": p["name"], "brand": p["brand"], "type": p["type"], "price_inr": p["price"], "colour": p["colour"],
+            "fabric": p["fabric"] or "not stated", "occasions": p["occasions"], "sizes": p["sizes"],
+            "fit_from_reviews": fit if p["category"] == "fashion" else "n/a",
+            "notes": p["notes"], "reviews": p["reviews"]}
+
+
+def _answer_offline(p, q):
+    """Rule-based answers from the listing, used when there is no model."""
+    ql, blob = q.lower(), " ".join(p["notes"] + p["reviews"]).lower()
+    notes = lambda *words: [n for n in p["notes"] + p["reviews"] if any(w in n.lower() for w in words)]
+    if any(w in ql for w in ("see-through", "see through", "sheer", "transparent", "lining")):
+        hit = notes("sheer", "see-through", "lining", "lined")
+        return "; ".join(hit) if hit else "Nothing in the listing or review notes says it is sheer."
+    if any(w in ql for w in ("size", "fit", "small", "large", "tight", "loose")):
+        if p["category"] != "fashion": return "Size isn't a concern for this product."
+        sig = {-1: "runs small, so consider one size up", 0: "fits true to size", 1: "runs large, so consider one size down"}[p["fit_signal"]]
+        hit = notes("small", "large", "tight", "loose", "size", "fit")
+        return f"Fit reviews say it {sig}." + (f" Notes: {'; '.join(hit[:2])}." if hit else "")
+    if any(w in ql for w in ("wash", "care", "clean", "iron", "crease")):
+        hit = notes("wash", "clean", "crease", "steam", "iron")
+        return "; ".join(hit) if hit else "The listing doesn't give care instructions."
+    if any(w in ql for w in ("fabric", "material", "breathable", "humid", "summer", "hot", "cotton", "made of")):
+        if not p["fabric"]: return "The listing doesn't state the fabric."
+        airy = p["fabric"] in BREATHABLE
+        return f"It's {p['fabric']}" + (", a breathable fabric that suits warm or humid weather." if airy else ".")
+    if any(w in ql for w in ("colour", "color", "shade", "look like")):
+        hit = notes("colour", "color", "peach", "pink", "shade", "light")
+        return f"Listed colour: {p['colour']}." + (f" Reviews: {'; '.join(hit[:2])}." if hit else "")
+    if any(w in ql for w in ("wedding", "office", "party", "occasion", "wear it", "haldi", "festive")):
+        return f"It's suited to: {', '.join(p['occasions'])}."
+    if any(w in ql for w in ("price", "cost", "discount", "offer")):
+        return f"It costs ₹{p['price']:,}."
+    return "I can only answer from this listing's details and review notes, and they don't cover that yet."
+
+
+def ask_product(p, question, api_key, models):
+    """Answer a shopper's question about one product from its listing and reviews only. Returns (answer, source)."""
+    if not api_key:
+        return _answer_offline(p, question), "listing (offline rules)"
+    prompt = ("You answer a shopper's question about ONE product on an Indian fashion store. Use only the product data below "
+              "(listing details, fit signal and review notes). If the data doesn't answer it, say so in one sentence and suggest "
+              "what the shopper could check; never invent facts, measurements, policies or delivery dates. Reply in at most "
+              "2 short sentences, in the shopper's language.\n\nProduct data: " + json.dumps(_product_facts(p), ensure_ascii=False)
+              + "\n\nShopper's question: " + question)
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            r = requests.post(url, json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                         "generationConfig": {"temperature": 0.2}})
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip(), model
+        except Exception:
+            pass
+    return _answer_offline(p, question), "listing (AI unavailable)"
+
+
 def _kw_stem(t):
     return t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t
 

@@ -132,6 +132,11 @@ TOP{border:1.5px solid #FFB3C6!important}
 .refine-l{font-weight:800;color:var(--pink);font-size:14px;white-space:nowrap}
 .refine-q{font-size:12px;font-weight:700;color:var(--mute);text-align:right;padding-right:4px}
 
+/* product Q&A */
+.qa{background:var(--bg);border-radius:10px;padding:8px 12px;margin:6px 0}
+.qa-q{font-size:13px;font-weight:700;color:var(--ink)}.qa-a{font-size:13.5px;color:var(--ink);margin-top:2px}
+.qa-s{font-size:11px;color:var(--mute);margin-top:2px}
+
 /* trace + risks */
 .step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
 .step b{color:var(--ink)}
