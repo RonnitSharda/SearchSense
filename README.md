@@ -4,6 +4,11 @@ Agentic AI mode for an e-commerce search bar.
 - **Layer 1, search agent:** light router (7 stages) → Gemini intent agent → context tools (weather, occasion rules) → catalog search → verifier with constraint relaxation → clarifier (one question, only when needed).
 - **Layer 2, fit & return-risk:** fit agent (size + confidence, with one fit question when confidence is low), honest notes from reviews, and a pre-checkout check with a bracketing guard. It runs on every product, whatever the search path.
 
+## Using the app
+- **🏠 Shop** opens on the full catalog (filter by department and type, sort by price, "Show more"). Search from the top bar: short queries use normal keyword search (with spelling fixes such as *sari → saree*), descriptive ones go to the AI agent.
+- **🧪 Test cases** has nine scripted shoppers (Rohan, Priya, Ananya, Ambiguous, No exact match, Lifestyle, Skincare, Order help, Follow-up). Each **Run test** button runs the case and opens the results.
+- **🧠 AI trace** shows every step of the last search: router decision, spelling fixes, model call, context tools, verifier attempts, a per-result constraint table and the structured intent. The sidebar toggle "Show agent trace" also shows a compact trace under the results.
+
 ## What is real and what is simulated
 The catalog is **24 hand-written demo products** (so the scripted scenarios stay reliable) plus **about 5,200 real Myntra listings** (`data/myntra_catalog.csv.gz`).
 
