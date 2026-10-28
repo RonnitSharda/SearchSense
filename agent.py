@@ -4,7 +4,8 @@ import numpy as np
 import requests
 from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
                      WEATHER, OCCASION_RULES)
-from prompt import NEEDS, build_system_prompt, build_response_schema
+import base64
+from prompt import NEEDS, build_system_prompt, build_response_schema, build_label_prompt
 
 # ------------------------------------------------------------------ vocabulary
 _FIELDS = ("name", "type", "colour", "fabric", "brand", "style", "colour_family", "gender")
@@ -60,8 +61,41 @@ ALIASES = {"sari": "saree", "saris": "sarees", "sarree": "saree", "lengha": "leh
            "lipstik": "lipstick", "parfum": "perfume", "kurtaset": "kurta set", "coord": "co-ord", "cushions": "cushion"}
 
 
-def correct_tokens(q):
-    """Light spelling correction against catalog vocabulary (stage 2)."""
+def _osa(a, b, maxd):
+    """Edit distance with adjacent swaps (Damerau / optimal string alignment), stopping early past maxd."""
+    if abs(len(a) - len(b)) > maxd:
+        return maxd + 1
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = a[i - 1] != b[j - 1]
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        if min(cur) > maxd:
+            return maxd + 1
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+# correction targets: catalog words, not function words ("wite" means white, not "with") or fragments like "gm"
+_NOT_TARGETS = {"with", "that", "for", "the", "and", "under", "below", "above", "well", "sits", "free", "look", "pair", "pairs",
+                "wear", "high", "something", "corner", "small", "prone", "skin", "rs", "inr", "day"}
+_VOCAB_LIST = sorted(w for w in VOCAB if len(w) >= 4 and w not in _NOT_TARGETS)   # typos are corrected to real words of 4+ letters
+
+
+def spelling_candidates(t, maxd=None):
+    """Catalog words within 1 edit (2 for long words), best first: fewest edits, then hand-written words, then commoner words.
+    Any letter can be wrong, including the first ("vlue" -> blue)."""
+    maxd = maxd or (1 if len(t) <= 5 else 2)
+    c = [(d, w) for w in _VOCAB_LIST if abs(len(w) - len(t)) <= maxd and (d := _osa(t, w, maxd)) <= maxd]
+    return sorted(c, key=lambda x: (x[0], -(x[1] in _STATIC_VOCAB), -_TOKEN_FREQ[x[1]]))
+
+
+def correct_tokens(q, ambiguous=None):
+    """Light spelling correction against catalog vocabulary (stage 2). If two corrections are equally likely, the word is
+    left alone and both are offered in `ambiguous` ({word: [options]}) so the app can ask "Did you mean ...?"."""
     out, fixes = [], []
     for tok in q.split():
         t = tok.lower()
@@ -69,23 +103,32 @@ def correct_tokens(q):
             out.append(ALIASES[t]); fixes.append((tok, ALIASES[t])); continue
         if len(t) <= 3 or t in VOCAB or not t.isalpha():   # 3-letter words ("gym") are too short to correct safely
             out.append(tok); continue
-        m = difflib.get_close_matches(t, _VOCAB_BY_FIRST.get(t[0], []), n=6, cutoff=0.78)
-        # best similarity first; among near-equal candidates prefer the commoner word ("wite" -> white, not write)
-        m = sorted(m, key=lambda w: (-round(difflib.SequenceMatcher(None, t, w).ratio(), 2), -_TOKEN_FREQ[w] - 10**6 * (w in _STATIC_VOCAB)))
-        if m and m[0] != t:
-            out.append(m[0]); fixes.append((tok, m[0]))
-        else:
-            out.append(tok)
+        c = spelling_candidates(t)
+        if not c:
+            far = spelling_candidates(t, (1 if len(t) <= 5 else 2) + 1) if len(t) >= 5 else []
+            if far and ambiguous is not None:   # too far to fix silently ("lenin"): ask "Did you mean linen?"
+                ambiguous[tok] = [w for _, w in far[:3]]
+            out.append(tok); continue
+        best = c[0]
+        rivals = [w for d, w in c[1:] if d == best[0] and (w in _STATIC_VOCAB) == (best[1] in _STATIC_VOCAB)
+                  and _TOKEN_FREQ[w] * 3 > _TOKEN_FREQ[best[1]]]
+        if rivals and ambiguous is not None:   # e.g. two common words one letter away: ask instead of guessing
+            ambiguous[tok] = [best[1]] + rivals[:2]
+            out.append(tok); continue
+        out.append(best[1]); fixes.append((tok, best[1]))
     return " ".join(out), fixes
 
 
-def route(query):
-    """Light classifier: decides stage 0 / 2 / 6 locally, or hands complex queries to the agent."""
+def route(query, ai=False):
+    """Light classifier: decides stage 0 / 2 / 6 locally, or hands complex queries to the agent.
+    With AI available (ai=True), any word the catalog doesn't know goes to the agent, which fixes spelling or asks;
+    the local spell-checker is only the fallback when there is no model."""
     q = query.strip()
     ql = q.lower()
     if OUT_OF_SCOPE.search(ql):
         return dict(stage=6, label="Out of scope", reason="Order or returns question, not a product search")
-    corrected, fixes = correct_tokens(q)
+    amb = {}
+    corrected, fixes = correct_tokens(q, amb)
     toks = re.findall(r"[a-z₹0-9]+", corrected.lower())
     subj = [t for t in toks if t in SUBJECTIVE]
     purpose = _PURPOSE_RE.search(corrected.lower())
@@ -98,6 +141,13 @@ def route(query):
         why = ", ".join(subj) or (f"purpose “{purpose.group(0)}…”" if purpose else "budget")
         return dict(stage="agent", label="Complex query: sent to agent", query=q, fixes=[],
                     reason=f"{len(toks)} words; subjective/context words: {why}")
+    if ai and (fixes or amb):
+        typed = ", ".join([a for a, _ in fixes] + list(amb))
+        return dict(stage="agent", label="Spelling: sent to agent", query=q, fixes=[],
+                    reason=f"Unrecognised word(s) {typed}: the agent fixes the spelling or asks")
+    if amb:   # not sure which word was meant: search what we can and ask "Did you mean ...?"
+        return dict(stage=2 if fixes else 0, label="Spelling unclear", query=corrected, fixes=fixes, did_you_mean=amb,
+                    reason="A word could be more than one catalog word, so the shopper is asked")
     if fixes:
         return dict(stage=2, label="Minor correction", query=corrected, fixes=fixes,
                     reason="Spelling fixed silently; meaning not in doubt")
@@ -176,7 +226,7 @@ def call_gemini(api_key, model, query, history=None, previous=None, use_schema=T
         "contents": [{"role": "user", "parts": [{"text": text}]}],
         "generationConfig": gen,
     }
-    r = requests.post(url, json=body, timeout=60)
+    r = requests.post(url, json=body)   # no time limit: quality over speed
     if r.status_code == 400 and use_schema:       # model that rejects the schema: the prompt alone still works
         return call_gemini(api_key, model, query, history, previous, use_schema=False)
     if r.status_code != 200:
@@ -390,7 +440,9 @@ def validate_intent(intent):
         it["clarify"] = None
     if cl and stage == 4:
         it["clarify"] = dict(question=str(cl["question"]), options=[str(o) for o in cl["options"]][:4])
-    it["stage"] = stage if stage in (1, 3, 4, 5) else (3 if stage == 6 else 1)   # 6 is only for support / other
+    it["stage"] = stage if stage in (1, 2, 3, 4, 5) else (3 if stage == 6 else 1)   # 6 is only for support / other
+    it["spelling"] = [dict(typed=str(f.get("typed", "")), meant=str(f.get("meant", ""))) for f in (it.get("spelling") or [])
+                      if isinstance(f, dict) and f.get("typed") and f.get("meant") and str(f["typed"]).lower() != str(f["meant"]).lower()]
     it["interpretation"] = str(it.get("interpretation") or "").strip()
     it["mappings"] = [m for m in (it.get("mappings") or []) if isinstance(m, dict) and m.get("phrase")]
     return it, notes
@@ -532,7 +584,7 @@ _FAB, _FAB_M = _coded("fabric")
 _CFAM, _CFAM_M = _coded("colour_family")
 _TIME, _TIME_M = _coded("time")
 _PAIR, _PAIR_M = _coded("pairs")
-_BRAND, _ = _coded("brand")
+_BRAND, _BRAND_M = _coded("brand")
 _PRICE = np.array([p["price"] for p in _PL], dtype=np.int64)
 # rated products rank above unrated ones (the Myntra data has no ratings); the jitter is a stable tie-break
 _RATING = np.array([(p.get("rating") or 0) / 10 for p in _PL])
@@ -719,6 +771,57 @@ def browse(dept="All", ptype=None, sort="Featured"):
     return [_PL[i]["id"] for i in idx]
 
 
+# ------------------------------------------------------------------ personal suggestions (profiles)
+def recommend(prefs, gender=None, exclude=(), k=8):
+    """'Picked for you': score the catalog against what a profile bought and searched for.
+    prefs: dict field -> {value: weight} for fields type, colour_family, brand, occasion."""
+    score = np.zeros(_N)
+    for field, codes, mapping in (("type", _TYP, _TYP_M), ("colour_family", _CFAM, _CFAM_M), ("brand", _BRAND, _BRAND_M)):
+        for v, w in (prefs.get(field) or {}).items():
+            if v in mapping: score += (codes == mapping[v]) * float(w) * {"type": 1.0, "colour_family": 0.4, "brand": 0.6}[field]
+    for v, w in (prefs.get("occasion") or {}).items():
+        if v in _OCC_M: score += _OCC_M[v] * float(w) * 0.5
+    ok = score > 0
+    if gender in ("women", "men"):
+        ok &= (_GEN == _GEN_M.get(gender, -1)) | (_GEN == _GEN_M.get("unisex", -1))
+    for pid in exclude:
+        ok[[i for i, p in enumerate(_PL) if p["id"] == pid]] = False
+    return [_PL[i] for i in _top(np.flatnonzero(ok), score + _RATING + _JITTER, k, per_brand=2)]
+
+
+LABEL_PROMPT = build_label_prompt(ALLOWED["types"])
+
+
+def read_image(image_bytes, mime, api_key, models):
+    """Read a size tag, bill or product label with Gemini vision. Returns (data, model, log); data is None on failure."""
+    log = []
+    if not api_key:
+        return None, None, ["Reading photos needs AI mode (GEMINI_API_KEY)"]
+    body = {"contents": [{"role": "user", "parts": [
+                {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_bytes).decode()}},
+                {"text": LABEL_PROMPT}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1}}
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        try:
+            r = requests.post(url, json=body)   # no time limit
+            if r.status_code != 200:
+                raise RuntimeError(f"{r.status_code}: {r.text[:150]}")
+            d = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+            size = str(d.get("size") or "").upper().strip()
+            d["size"] = size if size in SIZE_ORDER else None
+            waist = re.sub(r"\D", "", str(d.get("waist") or ""))
+            d["waist"] = waist if waist in WAIST_ORDER else None
+            d["product_type"] = _closest(d["product_type"], ALLOWED["types"]) if d.get("product_type") else None
+            d["gender"] = _closest(d["gender"], ALLOWED["gender"]) if d.get("gender") else None
+            d["brand"] = (str(d.get("brand")).strip() or None) if d.get("brand") else None
+            log.append(f"{model}: ok")
+            return d, model, log
+        except Exception as e:
+            log.append(f"{model}: {str(e)[:90]}")
+    return None, None, log
+
+
 def _kw_stem(t):
     return t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t
 
@@ -783,11 +886,12 @@ def keyword_search(query, max_results=8, gender=None, info=None):
     size = SIZE_RE.search(query)
     hits = np.zeros(_N)
     every = np.ones(_N, bool)
-    used = []
+    used, unknown = [], []
     for t in toks:
         variants = COLOUR_SYNONYMS.get(t) or KW_SYNONYMS.get(t) or [t]
         posts = [_KW_INDEX[v] for v in {_kw_stem(w) for w in variants} if v in _KW_INDEX]
         if not posts:
+            unknown.append(t)
             continue   # a word the catalog doesn't know can't narrow anything
         m = np.zeros(_N, bool)
         for ps in posts: m[ps] = True
@@ -802,7 +906,7 @@ def keyword_search(query, max_results=8, gender=None, info=None):
     if not ok.any() and used:
         ok, mode = (hits > 0) & base, "partial (nothing matched every word)"
     if info is not None:
-        info.update(words=used, mode=mode, gender=g)
+        info.update(words=used, mode=mode, gender=g, unknown=unknown)
     return [_PL[i] for i in _top(np.flatnonzero(ok), hits + _RATING + _JITTER, max_results, per_brand=3)]
 
 

@@ -71,6 +71,18 @@ EXAMPLES = [
       "mappings": [{"phrase": "breathable", "maps_to": "fabrics: cotton, linen, mul cotton, khadi, rayon"},
                    {"phrase": "haldi", "maps_to": "occasion haldi, daytime"}],
       "clarify": None}),
+    ("Vlue kurta",
+     {"spelling": [{"typed": "Vlue", "meant": "blue"}], "stage": 2, "interpretation": "Blue kurta",
+      "hard": {"category": "fashion", "gender": None, "budget_min": None, "budget_max": None, "size": None, "types": ["kurta"], "style": "ethnic"},
+      "soft": {"occasion": None, "time": None, "city": None, "colour_family": [], "colours": ["blue"], "fabrics": [], "fabric_named": False,
+               "pairs": None, "needs": []},
+      "mappings": [], "clarify": None}),
+    ("lenin shirt for men",
+     {"confidence": "medium", "spelling": [], "stage": 4, "interpretation": "Men's shirt; 'lenin' is probably linen or denim",
+      "hard": {"category": "fashion", "gender": "men", "budget_min": None, "budget_max": None, "size": None, "types": ["shirt"], "style": "western"},
+      "soft": {"occasion": None, "time": None, "city": None, "colour_family": [], "colours": [], "fabrics": [], "fabric_named": False,
+               "pairs": None, "needs": []},
+      "mappings": [], "clarify": {"question": "Did you mean a linen shirt or a denim shirt?", "options": ["Linen shirt", "Denim shirt"]}}),
     ("navy linen shirt for men size L",
      {"stage": 1, "interpretation": "Men's navy linen shirt in size L",
       "hard": {"category": "fashion", "gender": "men", "budget_min": None, "budget_max": None, "size": "L", "types": ["shirt"], "style": "western"},
@@ -138,7 +150,8 @@ EXAMPLES = [
 def _with_type(a):
     """Examples default to a product search; query_type and reply are listed first, as the model should decide them first."""
     return {"query_type": a.get("query_type", "product_search"), "reply": a.get("reply"), "confidence": a.get("confidence", "high"),
-            **{k: v for k, v in a.items() if k not in ("query_type", "reply", "confidence")}}
+            "spelling": a.get("spelling", []),
+            **{k: v for k, v in a.items() if k not in ("query_type", "reply", "confidence", "spelling")}}
 
 
 # Message -> query_type, including the tricky ones. Shown to the model as a table.
@@ -204,7 +217,8 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
 - confidence: "high" | "medium" | "low": how sure you are that the constraints capture what the shopper meant. Use "low"
   when you had to guess (unfamiliar words, very unusual phrasing, a request you could only partly map). Low confidence makes the
   app also show normal keyword results for the shopper's own words, so they are never worse off.
-- stage: 1 = clear, literal request; 3 = you translated subjective or contextual words into attributes;
+- spelling: every typo, slang or shorthand word you corrected, as [{{"typed": "vlue", "meant": "blue"}}]. [] if none.
+- stage: 1 = clear, literal request; 2 = minor correction: the only thing you did was fix spelling / slang / shorthand; 3 = you translated subjective or contextual words into attributes;
   4 = ambiguous: a missing detail would split the results into very different sets (see Clarify);
   6 = not a product search (query_type support or other).
 - interpretation: one plain sentence (max 18 words) a shopper would understand, e.g. "Breathable pastel ethnic outfit for a
@@ -257,6 +271,13 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
    keep constraints and use the referenced item's type, colour and fabric as soft preferences. A message with no link to the
    previous search is a new search: ignore the previous constraints.
 5. Spelling, Hinglish and Indian English are normal: "sari", "kurthi", "shaadi", "4k budget". Map them, don't reject them.
+   Fix typos silently when the meaning is not in doubt, list each fix in "spelling", and use stage 2 if that was all you did:
+     "Vlue kurta" -> blue kurta · "wite linnen shirt M" -> white linen shirt, size M · "jens" -> jeans · "blak tshirt" -> black t-shirt
+     "pastle lehngha for haldi" -> pastel lehenga, haldi (stage 3: haldi was also interpreted) · "swet shirt" -> sweatshirt
+     "kurtaa" -> kurta · "cottn" -> cotton · "gren" -> green · "lenght" -> length
+   When a misspelt word could mean two different things that would change the results, do not guess: use stage 4 and ask
+   "Did you mean …?" with the readings as options, e.g. "lenin shirt" -> {{"question": "Did you mean a linen shirt or a denim
+   shirt?", "options": ["Linen shirt", "Denim shirt"]}}. Still fill the constraints you are sure of (type shirt).
 6. Product words that only sound like support are still searches: "track pants", "returnable kurta", "exchange offer on sarees".
 7. Act silently when sure, show your interpretation when unsure, ask only when the answer would change the results.
    The search code (not you) decides stage 5 "no exact match" after checking the catalog; never output stage 5.
@@ -283,6 +304,8 @@ def build_response_schema(allowed):
             "query_type": _str(["product_search", "out_of_catalog", "support", "other"]),
             "reply": _str(nullable=True),
             "confidence": _str(["high", "medium", "low"]),
+            "spelling": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"typed": _str(), "meant": _str()},
+                                                    "required": ["typed", "meant"]}},
             "stage": {"type": "INTEGER"},
             "interpretation": _str(),
             "hard": {"type": "OBJECT", "properties": {
@@ -309,6 +332,27 @@ def build_response_schema(allowed):
             "clarify": {"type": "OBJECT", "nullable": True, "properties": {"question": _str(), "options": arr(_str())},
                         "required": ["question", "options"]},
         },
-        "required": ["query_type", "reply", "confidence", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
-        "propertyOrdering": ["query_type", "reply", "confidence", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
+        "required": ["query_type", "reply", "confidence", "spelling", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
+        "propertyOrdering": ["query_type", "reply", "confidence", "spelling", "stage", "interpretation", "hard", "soft", "mappings", "clarify"],
     }
+
+
+def build_label_prompt(types):
+    """Instructions for reading a photo the shopper uploads (size tag, bill, product label) for the fit assistant."""
+    return f"""You read photos for the fit assistant of an Indian fashion store. The photo is usually one of: a clothing size tag or
+care label, a bill / invoice / order screenshot, a product label or price tag, or a photo of a garment.
+Return ONLY one JSON object:
+{{"kind": "size tag" | "bill" | "product label" | "garment photo" | "other",
+  "brand": string or null,
+  "product_type": one of [{', '.join(types)}] or null,
+  "gender": "women" | "men" | "unisex" | null,
+  "size": "XS" | "S" | "M" | "L" | "XL" | "XXL" | null,
+  "waist": "26" | "28" | "30" | "32" | "34" | "36" | null,
+  "colour": string or null,
+  "price": integer rupees or null,
+  "items": [{{"name": string, "size": string or null, "price": integer or null}}],
+  "summary": "one short sentence saying what you read"}}
+Rules: read only what is visible; never guess a brand or size you cannot see. Convert "Medium" -> "M", "32W" or "W32" -> waist "32",
+"40 (L)" -> "L". Sizes like "UK 10" or "EU 38" are not letter sizes: put them in summary and leave size null.
+For a bill with several clothing items, list them in items and fill brand/size from the first clothing item.
+If the photo has nothing to do with clothing or shopping, use kind "other" and leave the other fields null."""

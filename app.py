@@ -1,4 +1,4 @@
-import os, re, sys, time, html, json, collections, importlib
+import os, re, sys, time, html, json, collections, importlib, zlib, hashlib
 import streamlit as st
 
 # When new code is deployed, Streamlit unloads changed modules while other sessions may be importing them, which can
@@ -7,7 +7,7 @@ for _attempt in range(5):
     try:
         from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE, CATALOG_SOURCE
         import agent as A
-        from ui import CSS, image_block, price_block
+        from ui import CSS, DARK_CSS, image_block, price_block
         break
     except KeyError:
         if _attempt == 4:
@@ -38,9 +38,7 @@ S.setdefault("cart", [])
 S.setdefault("history", [])
 S.setdefault("result", None)
 S.setdefault("pid", None)
-S.setdefault("profile", dict(usual_size=None, waist=None, anchor_brand=None, anchor_size=None, past_brands=[]))
 S.setdefault("removed_chips", [])
-S.setdefault("fit_answer", {})
 S.setdefault("last_results", [])
 TABS = ["🏠 Shop", "🧪 Test cases", "🧠 AI trace", "📊 Metrics"]
 S.setdefault("tab", TABS[0])
@@ -69,7 +67,8 @@ def fit_badge(p):
 
 
 def record_add(p, size, fa):
-    """Accepted-size-recommendation KPI: did the shopper keep the size we suggested?"""
+    """Accepted-size-recommendation KPI: did the shopper keep the size we suggested? Also feeds this profile's suggestions."""
+    note_behaviour("type", p["type"], 2); note_behaviour("brand", p["brand"], 1); note_behaviour("colour_family", p["colour_family"], 1)
     S.metrics["adds"].append(dict(pid=p["id"], size=size, rec=(fa or {}).get("size") if (fa or {}).get("confidence") in ("high", "medium") else None))
 
 def risky_note(p):
@@ -199,7 +198,7 @@ def run_search(q, followup=False):
     t0 = time.time()
     S.removed_chips = []
     q_in = resolve_followup(q) if followup else q
-    r = A.route(q_in if followup else q)
+    r = A.route(q_in if followup else q, ai=bool(API_KEY))
     if followup and r["stage"] in (0, 2):
         r = dict(stage="agent", label="Follow-up: sent to agent with context", query=q_in, fixes=[], reason="Refinement of the previous search")
     res = dict(query=q, route=r, steps=[], t=0)
@@ -290,6 +289,13 @@ def run_search(q, followup=False):
 
 def record_search(res):
     n = len(res.get("items") or [])
+    if res["kind"] == "agent":
+        it = res.get("intent", {})
+        for t in it.get("hard", {}).get("types") or []: note_behaviour("type", t)
+        for cf in it.get("soft", {}).get("colour_family") or []: note_behaviour("colour_family", cf, 0.5)
+        if it.get("soft", {}).get("occasion"): note_behaviour("occasion", it["soft"]["occasion"])
+    elif res["kind"] == "keyword":
+        for t, _ in (res.get("kw_filters") or {}).get("types", []): note_behaviour("type", t)
     S.metrics["searches"].append(dict(q=res["query"], kind=res["kind"], t=res["t"], n=n,
                                       stage=res["route"]["stage"] if res["route"]["stage"] != "agent" else res.get("intent", {}).get("stage"),
                                       clarify=bool(res.get("intent", {}).get("stage") == 4 and res.get("intent", {}).get("clarify")),
@@ -316,23 +322,184 @@ def open_cart():
 def go_home():
     S.result, S.view, S.home_n = None, "search", 24; go_tab(TABS[0])
 
+# ------------------------------------------------------------------ profiles (several shoppers per account)
+def _pick(pred, n, salt):
+    """Deterministic demo picks from the real catalog."""
+    ids = sorted((pid for pid, p in PRODUCTS.items() if p["source"] == "myntra" and pred(p)), key=lambda i: zlib.crc32(f"{i}|{salt}".encode()))
+    return ids[:n]
+
+
+def _order(pid, size, outcome, when):
+    return dict(pid=pid, size=size, outcome=outcome, when=when)
+
+
+def seed_profiles():
+    """Demo order history for the three personas in the solution doc (illustrative, not real orders)."""
+    women = lambda t: (lambda p: p["gender"] == "women" and p["type"] == t)
+    men = lambda t: (lambda p: p["gender"] == "men" and p["type"] == t)
+    pk = lambda pred, salt: (_pick(pred, 1, salt) or [None])[0]
+    profs = {
+        "Priya": dict(gender="women", usual_size="M", waist=None, anchor_brand=None, anchor_size=None, orders=[
+            _order(pk(lambda p: women("kurta set")(p) and p["colour_family"] == "pastel", 1), "M", "kept · fits well", "Aug"),
+            _order(pk(lambda p: women("kurta")(p) and p["colour_family"] == "bright", 2), "S", "returned · too small", "Jul"),
+            _order(pk(women("dress"), 3), "M", "kept · fits well", "May")]),
+        "Ananya": dict(gender="women", usual_size="M", waist=None, anchor_brand=None, anchor_size=None, orders=[
+            _order(pk(women("top"), 4), "M", "kept · fits well", "Sep"),
+            _order(pk(women("jeans"), 5), "30", "returned · too small at the waist", "Jun"),
+            _order(pk(women("kurta"), 6), "M", "kept · fits well", "Mar")]),
+        "Rohan": dict(gender="men", usual_size="M", waist=None, anchor_brand=None, anchor_size=None, orders=[
+            _order(pk(men("shirt"), 7), "M", "kept · fits well", "Sep"),
+            _order(pk(men("t-shirt"), 8), "M", "kept · fits well", "Aug"),
+            _order(pk(men("trousers"), 9), "34", "returned · too loose", "Jul")]),
+    }
+    for name, pr in profs.items():
+        pr["orders"] = [o for o in pr["orders"] if o["pid"]]
+        pr["past_brands"] = sorted({PRODUCTS[o["pid"]]["brand"] for o in pr["orders"] if o["outcome"].startswith("kept")})
+        pr.update(name=name, behaviour={})
+    return profs
+
+
+S.setdefault("profiles", seed_profiles())
+S.setdefault("active_profile", "Priya")
+if S.active_profile not in S.profiles:
+    S.active_profile = next(iter(S.profiles))
+S.profile = S.profiles[S.active_profile]
+
+
+def note_behaviour(kind, value, w=1.0):
+    """What this profile searches for and adds, so suggestions follow behaviour, not only past orders."""
+    if value:
+        b = S.profile.setdefault("behaviour", {})
+        b[f"{kind}:{value}"] = b.get(f"{kind}:{value}", 0) + w
+
+
+def profile_prefs(pr):
+    """Weights per attribute from kept orders (strong) and this session's behaviour (lighter)."""
+    prefs = {"type": collections.Counter(), "colour_family": collections.Counter(), "brand": collections.Counter(), "occasion": collections.Counter()}
+    for o in pr.get("orders", []):
+        p = PRODUCTS[o["pid"]]
+        w = 2.0 if o["outcome"].startswith("kept") else 0.5   # a return still says what they were shopping for
+        prefs["type"][p["type"]] += w; prefs["colour_family"][p["colour_family"]] += w
+        if o["outcome"].startswith("kept"): prefs["brand"][p["brand"]] += 1
+        for oc in p["occasions"][:2]: prefs["occasion"][oc] += w / 2
+    for key, w in pr.get("behaviour", {}).items():
+        field, _, v = key.partition(":")
+        if field in prefs: prefs[field][v] += w
+    return prefs
+
+
+def use_as_anchor(pid, size):
+    """A past order that fitted well becomes the size anchor for the fit agent."""
+    p = PRODUCTS[pid]
+    S.profile["anchor_brand"] = p["brand"]
+    if size.isdigit(): S.profile["waist"] = size
+    else: S.profile["anchor_size"] = size
+    if p["brand"] not in S.profile["past_brands"]: S.profile["past_brands"] = S.profile["past_brands"] + [p["brand"]]
+    st.toast(f"Fit anchor set: {p['brand']} {size}")
+
+
+def shop_similar(pid):
+    p = PRODUCTS[pid]
+    q = f"{p['colour'].split(' & ')[0]} {p['type']}"
+    S.q = q; run_search(q); go_tab(TABS[0])
+
+
 # ------------------------------------------------------------------ sidebar
+OTHER_BRAND = "Other (type it)"
+
+
+def _create_profile():
+    name = (S.get("new_profile_name") or "").strip()
+    if name and name not in S.profiles:
+        S.profiles[name] = dict(name=name, gender=S.get("new_profile_gender", "women"), usual_size=None, waist=None,
+                                anchor_brand=None, anchor_size=None, past_brands=[], orders=[], behaviour={})
+        S.active_profile = name
+
+
+@st.cache_data(show_spinner=False)
+def cached_read_image(digest, data, mime, _key, models):
+    return A.read_image(data, mime, _key, list(models))
+
+
 with st.sidebar:
-    st.markdown("### 👤 Your fit profile")
-    st.caption("Used to recommend your size on every product, whichever way you search. "
-               "Only this session and the brands you choose to share are used; nothing is stored.")
-    us = st.selectbox("Usual top size", ["Not set"] + SIZE_ORDER, index=3)
-    wa = st.selectbox("Usual waist (jeans)", ["Not set"] + WAIST_ORDER, index=0)
-    ab = st.selectbox("Brand that fits you best", list(ANCHOR_BRANDS.keys()), index=len(ANCHOR_BRANDS) - 1)
-    gd = st.radio("Shopping for", ["Women", "Men", "Any"], horizontal=True)
-    pb = st.multiselect("Brands you've bought here", sorted({p["brand"] for p in PRODUCTS.values()}))
-    S.profile.update(usual_size=None if us == "Not set" else us, waist=None if wa == "Not set" else wa,
-                     anchor_brand=None if ab == "None / not sure" else ab, past_brands=pb,
-                     gender=None if gd == "Any" else gd.lower())
-    S.profile.update(S.fit_answer)
-    if S.fit_answer:
-        st.caption(f"Fit answer saved: {S.fit_answer.get('anchor_brand')} {S.fit_answer.get('waist') or S.fit_answer.get('anchor_size')}")
+    st.markdown("### 👤 Shopping for")
+    names = list(S.profiles)
+    st.selectbox("Profile", names, key="active_profile", label_visibility="collapsed",
+                 help="Each profile keeps its own sizes, past orders and suggestions (e.g. you, a parent, a partner).")
+    S.profile = pr = S.profiles[S.active_profile]
+    with st.popover("➕ New profile", use_container_width=True):
+        st.text_input("Name", key="new_profile_name", placeholder="e.g. Mom, Rahul")
+        st.radio("Shops for", ["women", "men"], key="new_profile_gender", horizontal=True)
+        st.button("Create profile", on_click=_create_profile, type="primary")
+
+    st.markdown("#### Fit profile")
+    st.caption("Used to recommend a size on every product, whichever way you search. Only this session, this profile's orders "
+               "and what you choose to share are used; nothing is stored.")
+    k = pr["name"]   # widget keys per profile, so switching profiles shows that person's values
+    us = st.selectbox("Usual top size", ["Not set"] + SIZE_ORDER, key=f"us_{k}",
+                      index=(SIZE_ORDER.index(pr["usual_size"]) + 1) if pr.get("usual_size") in SIZE_ORDER else 0)
+    wa = st.selectbox("Usual waist (jeans)", ["Not set"] + WAIST_ORDER, key=f"wa_{k}",
+                      index=(WAIST_ORDER.index(pr["waist"]) + 1) if pr.get("waist") in WAIST_ORDER else 0)
+    brands = [b for b in ANCHOR_BRANDS if b != "None / not sure"]
+    cur = pr.get("anchor_brand")
+    opts = ["None / not sure"] + brands + [OTHER_BRAND]
+    ab = st.selectbox("Brand that fits you best", opts, key=f"ab_{k}_{cur}",
+                      index=opts.index(cur) if cur in opts else (opts.index(OTHER_BRAND) if cur else 0))
+    if ab == OTHER_BRAND:
+        typed = st.text_input("Type the brand", value=cur if cur not in opts else "", key=f"abt_{k}", placeholder="e.g. Uniqlo, Libas")
+        ab = typed.strip() or None
+    asz = pr.get("anchor_size") or pr.get("waist")
+    if ab and ab != "None / not sure" and asz:
+        st.caption(f"Size anchor: {ab} {asz}")
+    gd = st.radio("Shops for", ["Women", "Men", "Any"], horizontal=True, key=f"gd_{k}",
+                  index={"women": 0, "men": 1}.get(pr.get("gender"), 2))
+    pb = st.multiselect("Brands bought here", sorted({p["brand"] for p in PRODUCTS.values()}), default=pr.get("past_brands", []), key=f"pb_{k}")
+    pr.update(usual_size=None if us == "Not set" else us, waist=None if wa == "Not set" else wa,
+              anchor_brand=None if ab in (None, "None / not sure") else ab, past_brands=pb,
+              gender=None if gd == "Any" else gd.lower())
+
+    # past orders: browse and pick one as the size anchor, or shop something similar
+    with st.expander(f"🧾 Past orders ({len(pr.get('orders', []))})"):
+        if not pr.get("orders"):
+            st.caption("No orders yet for this profile.")
+        for j, o in enumerate(pr.get("orders", [])):
+            p = PRODUCTS[o["pid"]]
+            st.markdown(f"<div class='pbrand'>{html.escape(p['brand'])}</div><div class='why' style='min-height:0'>{html.escape(p['name'][:60])}"
+                        f"<br>Size {o['size']} · {html.escape(o['outcome'])} · {o['when']}</div>", unsafe_allow_html=True)
+            o1, o2 = st.columns(2)
+            if o["outcome"].startswith("kept"):
+                o1.button("Fits me: use size", key=f"anc{k}{j}", on_click=use_as_anchor, args=(o["pid"], o["size"]), use_container_width=True)
+            o2.button("Shop similar", key=f"sim{k}{j}", on_click=shop_similar, args=(o["pid"],), use_container_width=True)
+        st.caption("Demo order history (illustrative).")
+
+    # photo of a size tag, bill or label -> brand + size + product, read by Gemini vision
+    with st.expander("📷 Read a size tag, bill or label"):
+        up = st.file_uploader("Photo", type=["png", "jpg", "jpeg", "webp"], key=f"up_{k}", label_visibility="collapsed")
+        if up is not None:
+            data = up.getvalue()
+            st.image(data, use_container_width=True)
+            d, model, log = cached_read_image(hashlib.md5(data).hexdigest(), data, up.type or "image/jpeg", API_KEY, tuple(MODELS))
+            if not d:
+                st.info("Reading photos needs AI mode (a Gemini key)." if not API_KEY else "Couldn't read that photo: " + "; ".join(log)[:160])
+            else:
+                st.markdown(f"**I read:** {html.escape(d.get('summary') or d.get('kind') or '')}")
+                facts = [f"{k2}: {d[k2]}" for k2 in ("brand", "product_type", "size", "waist", "colour", "price") if d.get(k2)]
+                if facts: st.caption(" · ".join(facts))
+                size = d.get("size") or d.get("waist")
+                c1, c2 = st.columns(2)
+                if d.get("brand") and size and c1.button("Use as my size", key=f"tag_anchor_{k}", use_container_width=True):
+                    pr["anchor_brand"] = d["brand"]
+                    if size.isdigit(): pr["waist"] = size
+                    else: pr["anchor_size"] = size
+                    st.rerun()
+                q = " ".join(x for x in (d.get("colour"), d.get("product_type")) if x)
+                if q and c2.button("Search this", key=f"tag_search_{k}", use_container_width=True):
+                    S.q = q; run_search(q); go_tab(TABS[0]); st.rerun()
+
     st.divider()
+    dark = st.toggle("🌙 Dark mode", key="dark_mode")
+    if dark:
+        st.markdown(DARK_CSS, unsafe_allow_html=True)
     show_trace = st.toggle("Show agent trace", value=True, help="Shows the trace under each search result. The 🧠 AI trace tab always has the full trace.")
     st.markdown(f"**AI model:** {'Gemini (' + MODELS[0] + ')' if API_KEY else 'offline rules (no key set)'}")
     st.caption(f"Catalog: {CATALOG_SOURCE}. Titles, brands, prices and images are real Myntra listings; colour, fabric, occasion "
@@ -359,14 +526,14 @@ n3.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top"
 
 # ------------------------------------------------------------------ test cases (scripted personas)
 TEST_CASES = [
-    dict(name="Rohan", icon="⌨️", tag="Stage 2 · typo", query="wite linnen shirt M",
+    dict(name="Rohan", icon="⌨️", tag="Stage 2 · typo", query="wite linnen shirt M", profile="Rohan",
          tests="Spelling correction and a size in a short query.",
          expect="“wite linnen” is fixed to “white linen” without asking; shirts stocked in M; fit badge on every card."),
-    dict(name="Priya", icon="🌸", tag="Stage 3 · complex intent",
+    dict(name="Priya", icon="🌸", tag="Stage 3 · complex intent", profile="Priya",
          query="breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery",
          tests="Subjective words mapped to attributes, plus weather and occasion tools.",
          expect="Breathable pastel ethnic sets under ₹6,000; the trace shows the Mumbai weather and day-wedding rules."),
-    dict(name="Ananya", icon="👖", tag="Stage 1 · fit", query="high-waist straight jeans for office",
+    dict(name="Ananya", icon="👖", tag="Stage 1 · fit", query="high-waist straight jeans for office", profile="Ananya",
          tests="Fit agent when there is no size history.",
          expect="Jeans marked “Not sure of your size”: Add opens the product, which asks one fit question or shows the size "
                 "chart, never a guess. Answer it to get “32 recommended · runs small”; add two sizes to see the cart's ‘Keep only’ fix."),
@@ -387,7 +554,7 @@ TEST_CASES = [
          tests="Router spotting a non-search question.",
          expect="“This isn’t a search query”: no product search, redirected to Customer Care / help chat. "
                 "Try “Return order” or “refund not received” too."),
-    dict(name="Follow-up", icon="🔁", tag="Memory · refine", query="#2 but cheaper",
+    dict(name="Follow-up", icon="🔁", tag="Memory · refine", query="#2 but cheaper", profile="Priya",
          setup="breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery",
          tests="Refining the previous search by pointing at a result.",
          expect="Runs Priya's search, then “#2 but cheaper”: the budget drops below result #2's price and the style is kept."),
@@ -396,6 +563,8 @@ TEST_CASES = [
 
 def run_case(case):
     S.history, S.last_results = [], []   # each test case starts a fresh session
+    if case.get("profile") in S.profiles:   # Rohan, Priya and Ananya shop as their own profile
+        S.active_profile = case["profile"]; S.profile = S.profiles[case["profile"]]
     if case.get("setup"):
         run_search(case["setup"])
         run_search(case["query"], followup=True)
@@ -566,6 +735,16 @@ def view_home():
     st.markdown(f'<div class="hero"><div><div class="hero-t">Shop {len(PRODUCTS):,} products</div>'
                 '<div class="hero-s">Browse below, or describe what you need in the search bar: AI mode understands occasions, '
                 'weather, budget and fit. Not sure what to try? Open 🧪 Test cases.</div></div></div>', unsafe_allow_html=True)
+    prefs = profile_prefs(S.profile)
+    if any(prefs[f] for f in prefs):
+        ordered = {o["pid"] for o in S.profile.get("orders", [])}
+        recs = A.recommend(prefs, S.profile.get("gender"), exclude=ordered, k=4)
+        if recs:
+            top_types = ", ".join(t for t, _ in prefs["type"].most_common(2))
+            src = "past orders" + (" and what you've searched" if S.profile.get("behaviour") else "")
+            st.markdown(f'<div class="sugg">PICKED FOR {html.escape(S.profile["name"].upper())} · BASED ON {src.upper()} ({html.escape(top_types)})</div>',
+                        unsafe_allow_html=True)
+            grid(recs, numbered=False)
     st.markdown('<div class="sugg">POPULAR SEARCHES · TAP TO TRY AI MODE</div>', unsafe_allow_html=True)
     sc = st.columns(len(SUGGESTIONS))
     for c, sq in zip(sc, SUGGESTIONS):
@@ -635,6 +814,7 @@ def _intent_summary(intent):
 def _why_notes(res, intent=None):
     """Short reasons under 'I understood': spelling fixes, mappings, profile, context tools."""
     notes = [f"fixed “{a}” → {b}" for a, b in res["route"].get("fixes", [])]
+    notes += [f"fixed “{f['typed']}” → {f['meant']}" for f in (intent or {}).get("spelling", [])]
     for m in (intent or {}).get("mappings", []) or []:
         notes.append(f"“{m.get('phrase', '')}” → {m.get('maps_to', '')}")
     for name, arg, out in res.get("steps", []):
@@ -812,6 +992,9 @@ def view_search():
         understood = describe(f.get("gender"), [c for c, _ in f.get("colours", [])], [t for t, _ in f.get("types", [])],
                               f.get("size"), extra=f.get("words", []))
         why = _why_notes(res) + (["gender from your profile"] if f.get("gender_from") == "profile" and f.get("gender") else [])
+        unknown = [w for w in (res.get("kw_info") or {}).get("unknown", []) if w not in (r.get("did_you_mean") or {})]
+        if unknown:
+            why.append("didn't recognise " + ", ".join(f"“{w}”" for w in unknown) + ", so I searched without it")
         partial = (res.get("kw_info") or {}).get("mode", "").startswith("partial")
         if items:
             showing = (f"<b>{len(items)}</b> {html.escape(understood.lower() if understood != 'products' else 'products')}"
@@ -820,6 +1003,14 @@ def view_search():
             showing = "nothing yet. Try describing what you need, e.g. “yellow t-shirt for the gym under ₹800”."
         with top:
             bubble(res["query"], understood, why, showing)
+            dym = r.get("did_you_mean") or {}
+            if dym:   # not sure which word was meant: ask instead of guessing
+                for word, options in dym.items():
+                    st.markdown(f'<div class="ask">🤔 <b>Did you mean</b> … for “{html.escape(word)}”?</div>', unsafe_allow_html=True)
+                    dc = st.columns(len(options) + 3)
+                    for c, o in zip(dc, options):
+                        fixed = re.sub(rf"\b{re.escape(word)}\b", o, res["query"], flags=re.I)
+                        c.button(o, key=f"dym{word}{o}", type="primary", use_container_width=True, on_click=run_suggestion, args=(fixed,))
             refine_bar(res, items)
             steps_strip(agent_steps(res, items))
         if r.get("fixes"):
@@ -876,11 +1067,11 @@ def view_search():
     S.last_results = [p["id"] for p, _ in items]
     if items:
         grid(items, intent, highlight=True)
-    if items and low_conf:   # safety net: the agent wasn't sure, so the shopper also gets plain search
-        kw = A.keyword_search(res["query"], max_results=8, gender=S.profile.get("gender"))
-        if kw:
-            st.markdown('<div class="rescount">Normal search results for your words</div>', unsafe_allow_html=True)
-            grid(kw, numbered=False)
+        if low_conf:   # safety net: the agent wasn't sure, so the shopper also gets plain search
+            kw = A.keyword_search(res["query"], max_results=8, gender=S.profile.get("gender"))
+            if kw:
+                st.markdown('<div class="rescount">Normal search results for your words</div>', unsafe_allow_html=True)
+                grid(kw, numbered=False)
     else:
         if res.get("near"):
             st.caption("Closest options if you can stretch the budget:")
@@ -929,13 +1120,15 @@ def view_product():
             if fa.get("ask"):
                 st.markdown(f"**One quick fit question:** {fa['ask']}")
                 a1, a2, a3 = st.columns([2, 1, 1])
-                brand = a1.selectbox("Brand", [b for b in ANCHOR_BRANDS if b != "None / not sure"], key="fqb")
+                brand = a1.selectbox("Brand", [b for b in ANCHOR_BRANDS if b != "None / not sure"] + [OTHER_BRAND], key="fqb")
+                if brand == OTHER_BRAND:
+                    brand = a1.text_input("Type the brand", key="fqb_typed", placeholder="e.g. Uniqlo").strip() or None
                 scale = WAIST_ORDER if p["sizes"][0].isdigit() else SIZE_ORDER
                 sz = a2.selectbox("Your size", scale, index=2, key="fqs")
-                if a3.button("Check fit", use_container_width=True):
-                    S.fit_answer["anchor_brand"] = brand
-                    if scale is WAIST_ORDER: S.fit_answer["waist"] = sz
-                    else: S.fit_answer["anchor_size"] = sz
+                if a3.button("Check fit", use_container_width=True, disabled=not brand):
+                    S.profile["anchor_brand"] = brand
+                    if scale is WAIST_ORDER: S.profile["waist"] = sz
+                    else: S.profile["anchor_size"] = sz
                     st.rerun()
                 if low:
                     with st.expander("Rather not answer? Size chart with key measurements", expanded=True):

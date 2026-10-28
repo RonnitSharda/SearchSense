@@ -189,3 +189,15 @@ def price_block(p):
         off = round(100 * (mrp - p["price"]) / mrp)
         return f'<div class="price">₹{p["price"]:,}<s>₹{mrp:,}</s><em>{off}% off</em></div>'
     return f'<div class="price">₹{p["price"]:,}</div>'
+
+
+# Dark theme. Streamlit paints its widgets from the light theme in config.toml, which CSS variables can't reach, so dark
+# mode inverts the whole app's colours and inverts photos and product tiles back, keeping their real colours.
+DARK_CSS = """
+<style>
+html,body{background:#101114}
+.stApp{filter:invert(1) hue-rotate(180deg);background:#EFEFF2}
+.pimg,[data-testid="stImage"],img{filter:invert(1) hue-rotate(180deg)}
+.pimg img{filter:none}
+[data-testid="stToast"]{filter:invert(1) hue-rotate(180deg)}
+</style>"""

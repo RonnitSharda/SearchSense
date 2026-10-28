@@ -13,6 +13,18 @@ Agentic AI mode for an e-commerce search bar.
   removable chip (Gender: Men · Item: T-shirt · Colour: Yellow). Top results are marked Best match / Top pick.
 - **🧠 AI trace** shows every step of the last search: router decision, spelling fixes, model call, context tools, verifier attempts, a per-result constraint table and the structured intent. The sidebar toggle "Show agent trace" also shows a compact trace under the results.
 
+## Profiles, photos and dark mode
+- **Profiles:** several shoppers per account (demo: Priya, Ananya, Rohan, the personas from the solution doc; "➕ New profile"
+  adds more). Each keeps its own sizes, brand anchor (type any brand), past orders and behaviour. The home page shows
+  "Picked for <name>" from kept orders and what that profile searched or added. Test cases switch to their persona's profile.
+- **Past orders:** "Fits me: use size" turns a kept order into the size anchor; "Shop similar" searches for it.
+  The order history is illustrative demo data.
+- **Photo of a size tag, bill or label:** Gemini reads brand, size and product, which can become the size anchor or a search
+  (needs a Gemini key).
+- **Spelling:** with a Gemini key, any unknown word goes to the agent, which fixes clear typos (stage 2) or asks
+  "Did you mean ...?" (stage 4); without a key a local spell-checker does the same.
+- **🌙 Dark mode** toggle in the sidebar.
+
 ## The agent's master prompt
 `prompt.py` holds the intent agent's instructions (rendered copy: `docs/MASTER_PROMPT.md`). Step 1 classifies every message:
 `product_search`, `out_of_catalog` (we don't sell it; offer the closest thing we do), `support` (orders, returns, refunds,
