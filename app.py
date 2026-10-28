@@ -210,6 +210,7 @@ def run_search(q, followup=False):
         if items or not API_KEY:
             res.update(kind="keyword", items=[p["id"] for p in items], kw_info=info,
                        kw_filters=A.keyword_filters(r["query"], S.profile.get("gender")))
+            S.history.append(f"{r['query']} -> normal search")
             S.last_results = res["items"]
         else:   # nothing matched the words: let the agent work out what the shopper meant
             res["steps"].append(("Escalation", "route()", "No keyword match, so the query goes to the AI agent"))
@@ -217,7 +218,13 @@ def run_search(q, followup=False):
                                     reason="Keyword search found nothing; the agent interprets the request")
     if r["stage"] == "agent":
         hist = tuple(S.history) if followup else tuple()
-        prev = S.result.get("intent") if followup and S.result and S.result.get("kind") == "agent" else None
+        prev = None
+        if followup and S.result and S.result.get("kind") == "agent":
+            prev = S.result.get("intent")
+        elif followup and S.result and S.result.get("kind") == "keyword" and S.result.get("kw_filters"):
+            kf = S.result["kw_filters"]   # a normal search's filters become the previous constraints
+            prev = {"hard": {"gender": kf.get("gender"), "types": [t for t, _ in kf.get("types", [])], "size": kf.get("size")},
+                    "soft": {"colours": [c for c, _ in kf.get("colours", [])]}}
         intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS),
                                                json.dumps(prev, ensure_ascii=False, default=str) if prev else "")
         res["steps"].append(("Intent & constraints", f"model: {model}", "; ".join(l for l in log if not l.startswith("validator:"))
@@ -516,16 +523,26 @@ def cached_browse_types(dept):
 def tradeoff(intent, relaxed, items):
     """'Nothing in chanderi under ₹6,000. Here's the closest: … in cotton-silk at ₹5,800.'"""
     show = lambda v: " / ".join(v) if isinstance(v, list) else str(v)
-    names = {"fabrics": "in {}", "colours": "in {}", "colour_family": "in {} colours", "pairs": "that pairs with {}",
-             "time": "for the {}", "occasion": "for a {}"}
-    asked = " and ".join(names.get(k, "{}").format(show(v)) for k, v in relaxed)
+    occ = {"wedding": "for a wedding", "haldi": "for a haldi", "sports": "for sports / gym", "office": "for office",
+           "party": "for a party", "festive": "for festive wear", "casual": "for casual wear", "brunch": "for brunch"}
+    names = {"fabrics": "in {}", "colours": "in {}", "colour_family": "in {} colours", "pairs": "that pairs with {}"}
+    def phrase(k, v):
+        if k == "occasion": return occ.get(v, f"for {v}")
+        if k == "time": return "for daytime" if v == "day" else "for the evening"
+        return names.get(k, "{}").format(show(v))
+    asked = " and ".join(phrase(k, v) for k, v in relaxed)
     h = intent.get("hard", {})
     budget = f" under ₹{h['budget_max']:,}" if h.get("budget_max") else ""
+    n_exact = sum(1 for _, checks in items if all(c[1] is not False for c in checks))
+    if n_exact:
+        dropped = ", ".join(k.replace("_", " ").replace("colours", "colour") for k, _ in relaxed)
+        return (f"Only {n_exact} exact match{'es' if n_exact > 1 else ''} {asked}{budget}, shown first. "
+                f"I've added close options without the {dropped} filter (marked ✕ on the card).")
     msg = f"Nothing {asked}{budget}."
     if items:
         p = items[0][0]
         got = {"fabrics": p["fabric"] or "another fabric", "colours": p["colour"], "colour_family": p["colour"],
-               "pairs": p["pairs"], "time": p["time"], "occasion": ", ".join(p["occasions"][:2])}.get(relaxed[0][0], "")
+               "pairs": p["pairs"], "time": p["time"], "occasion": None}.get(relaxed[0][0], "")
         msg += f" Here's the closest: {p['name']}{' in ' + got if got else ''} at ₹{p['price']:,}. Your other must-haves are kept."
     return msg
 
@@ -619,6 +636,44 @@ def steps_strip(steps):
     st.markdown(f'<div class="steps-h">How I got here</div><div class="steps">{cells}</div>', unsafe_allow_html=True)
 
 
+def _quick_refines(res, products):
+    """One-tap follow-ups that make sense for these results."""
+    if not products:
+        return []
+    out = ["#1 but cheaper"]
+    prices = sorted(p["price"] for p in products)
+    cap = int(round(prices[len(prices) // 2], -2))
+    if cap >= 200:
+        out.append(f"Under ₹{cap:,}")
+    out.append("Show more like #1")
+    g = (res.get("intent") or {}).get("hard", {}).get("gender") or (res.get("kw_filters") or {}).get("gender")
+    if g in ("women", "men"):
+        out.append(f"For {'men' if g == 'women' else 'women'} instead")
+    return out
+
+
+def _run_refine(text):
+    run_search(text, followup=True)
+    go_tab(TABS[0])
+
+
+def refine_bar(res, products):
+    """Follow-up box right under the reasoning bubble: the conversation continues where the shopper is looking."""
+    with st.form(f"follow{id(res)}", clear_on_submit=True, border=False):
+        f0, f1, f2 = st.columns([0.9, 5.2, 1], vertical_alignment="center")
+        f0.markdown('<div class="refine-l">✦ Refine</div>', unsafe_allow_html=True)
+        fq = f1.text_input("Refine", placeholder="Ask a follow-up… e.g. '#2 but cheaper', 'same in blue', 'something less heavy'",
+                           label_visibility="collapsed")
+        if f2.form_submit_button("Refine", use_container_width=True, type="primary") and fq.strip():
+            run_search(fq.strip(), followup=True); st.rerun()   # already on Shop; tabs can't change mid-run
+    quick = _quick_refines(res, products)
+    if quick:
+        qc = st.columns([0.9] + [1.25] * len(quick) + [max(0.1, 5.2 - 1.25 * len(quick))])
+        qc[0].markdown('<div class="refine-q">Try:</div>', unsafe_allow_html=True)
+        for c, t in zip(qc[1:], quick):
+            c.button(t, key=f"qr{t}{id(res)}", use_container_width=True, on_click=_run_refine, args=(t,))
+
+
 def filter_row(labels, key):
     """Applied filters, removable. Returns the labels the shopper removed."""
     if not labels:
@@ -691,6 +746,7 @@ def view_search():
             showing = "nothing yet. Try describing what you need, e.g. “yellow t-shirt for the gym under ₹800”."
         with top:
             bubble(res["query"], understood, why, showing)
+            refine_bar(res, items)
             steps_strip(agent_steps(res, items))
         if r.get("fixes"):
             if st.button(f"Search instead for “{res['query']}”", key="undo"):
@@ -737,6 +793,7 @@ def view_search():
             for c, o in zip(oc, cq["options"]):
                 if c.button(o, key="cl" + o, use_container_width=True, type="primary"):
                     run_search(f"{res['query']} — {o}"); st.rerun()
+        refine_bar(res, [p for p, _ in items])
         steps_strip(agent_steps(res, [p for p, _ in items], relaxed, removed))
 
     S.last_results = [p["id"] for p, _ in items]
@@ -751,12 +808,6 @@ def view_search():
             if kw:
                 st.caption("Normal search results for your words:")
                 grid(kw)
-
-    with st.form("follow", clear_on_submit=True, border=False):
-        f1, f2 = st.columns([6, 1])
-        fq = f1.text_input("Refine", placeholder="Ask a follow-up… e.g. '#2 but cheaper' or 'same but in lilac'", label_visibility="collapsed")
-        if f2.form_submit_button("Refine", use_container_width=True) and fq.strip():
-            run_search(fq.strip(), followup=True); st.rerun()
 
     if show_trace:
         with st.expander("🧠 Agent trace: what SearchSense did", expanded=False):

@@ -619,12 +619,16 @@ RELAX_ORDER = ["colours", "colour_family", "fabrics", "pairs", "time", "occasion
 def search(intent, min_results=2, max_results=6):
     """Catalog search + verifier loop with constraint relaxation."""
     h, s = intent.get("hard", {}), dict(intent.get("soft", {}))
+    s0 = dict(s)   # what the shopper asked for, before any relaxing
     relaxed, trace = [], []
     base = _hard_mask(h)
+    exact = None
     prefer = _isin(_CFAM, _CFAM_M, s.get("prefer_colour_family") or [])
     for attempt in range(len(RELAX_ORDER) + 1):
         ok = _all(_soft_masks(s), base)
         n_scored = int(ok.sum())
+        if exact is None:
+            exact = ok.copy()   # products that meet every original constraint
         trace.append(f"Attempt {attempt+1}: {int(base.sum()):,} pass hard constraints, {n_scored:,} pass all soft checks")
         if n_scored >= min_results or (relaxed and n_scored) or attempt == len(RELAX_ORDER):
             break
@@ -642,12 +646,17 @@ def search(intent, min_results=2, max_results=6):
     # listings that only pass because their fabric is unknown rank below ones that state a matching fabric
     unknown = (_FAB == _FAB_M.get("", -1)) * 0.3 if s.get("fabrics") and not s.get("fabric_named") else 0
     score = _RATING + prefer * 0.5 + _JITTER - unknown
+    if relaxed:
+        n_exact = int(exact.sum())
+        score = score + exact * 2.0   # exact matches always rank above the close options added by relaxing
+        trace.append(f"Exact matches before relaxing: {n_exact}" + (" (kept first)" if n_exact else ""))
     chosen = _top(np.flatnonzero(ok), score, max_results, per_brand=2)
     near = []
     if not len(chosen):  # show near misses on hard constraints, e.g. over budget: the cheapest few
         idx = np.flatnonzero(_hard_mask(h, drop=("budget",)))
         near = [_PL[i] for i in idx[np.argsort(_PRICE[idx], kind="stable")][:3]]
-    return [(_PL[i], check_soft(_PL[i], s)) for i in chosen], relaxed, trace, near
+    # checks are against what the shopper asked for, so a relaxed constraint shows as ✕ on the close options
+    return [(_PL[i], check_soft(_PL[i], s0)) for i in chosen], relaxed, trace, near
 
 
 # ------------------------------------------------------------------ browse (home page)

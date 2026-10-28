@@ -128,6 +128,10 @@ TOP{border:1.5px solid #FFB3C6!important}
 .st-ask{border-top:3px solid #3B82F6;background:#F0F7FF}
 .ask{background:#F0F7FF;border:1px solid #CFE3FF;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-size:14.5px}
 
+/* refine (follow-up) bar under the bubble */
+.refine-l{font-weight:800;color:var(--pink);font-size:14px;white-space:nowrap}
+.refine-q{font-size:12px;font-weight:700;color:var(--mute);text-align:right;padding-right:4px}
+
 /* trace + risks */
 .step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
 .step b{color:var(--ink)}
