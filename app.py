@@ -2,6 +2,7 @@ import os, re, time, html
 import streamlit as st
 from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE
 import agent as A
+from ui import CSS, image_block, price_block
 
 st.set_page_config(page_title="SearchSense: agentic search MVP", page_icon="🔎", layout="wide")
 
@@ -15,41 +16,6 @@ def _secret(k, default=None):
 API_KEY = _secret("GEMINI_API_KEY")
 MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
 
-CSS = """
-<style>
-:root{--navy:#1A1F5C;--pink:#E8336D;--pinkL:#FDE7EE;--card:#F4F5FA;--line:#D9DCEB;--mute:#6B6F86;--green:#1E9E6A;--greenL:#E3F6EE;--amber:#FFB020;--amberL:#FFF4DC;--red:#D93A3A;}
-.block-container{padding-top:3.2rem;max-width:1300px}
-.ss-top{display:flex;align-items:center;justify-content:space-between;background:var(--navy);color:#fff;border-radius:14px;padding:12px 20px;margin-bottom:14px}
-.ss-logo{font-weight:800;font-size:24px;letter-spacing:-.5px}.ss-logo b{color:#FF7FA6}
-.ss-sub{font-size:13px;opacity:.85}
-.pill{display:inline-block;border-radius:20px;padding:3px 11px;font-size:12px;font-weight:700;margin:2px 4px 2px 0}
-.p-navy{background:var(--navy);color:#fff}.p-pink{background:var(--pink);color:#fff}.p-amber{background:var(--amber);color:#3a2a00}
-.p-green{background:var(--green);color:#fff}.p-grey{background:#8A8EA8;color:#fff}.p-red{background:var(--red);color:#fff}
-.router{border:1.5px solid var(--line);border-radius:12px;padding:10px 14px;margin:6px 0 10px;background:#fff}
-.router small{color:var(--mute)}
-.aim{background:var(--pinkL);border-radius:12px;padding:10px 14px;margin-bottom:8px}
-.aim .t{color:var(--pink);font-weight:800;font-size:12px;letter-spacing:.8px}
-.aim .i{color:var(--navy);font-size:15px;margin-top:2px}
-.map{font-size:13px;color:var(--navy);margin-top:4px}
-.pcard{border:1.5px solid var(--line);border-radius:14px;padding:10px;background:#fff;height:100%}
-.pimg{height:130px;border-radius:10px;display:flex;align-items:flex-end;justify-content:center;margin-bottom:8px}
-.pname{font-weight:700;font-size:15px;line-height:1.25;color:#23253A}
-.pbrand{font-size:12px;color:var(--mute)}
-.price{font-weight:800;color:var(--navy);font-size:16px;margin:2px 0}
-.why{font-size:12.5px;color:var(--mute);line-height:1.3;margin:2px 0 6px}
-.badge{display:inline-block;font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:7px;margin:2px 0}
-.b-high{background:var(--greenL);color:#13724C}.b-medium{background:var(--amberL);color:#8A5A00}.b-low{background:#FDE8E8;color:var(--red)}
-.note{font-size:11.5px;background:var(--amberL);color:#8A5A00;border-radius:7px;padding:3px 8px;display:inline-block;margin-top:3px}
-.chk{font-size:11px;color:var(--mute)}
-.relax{background:var(--amberL);border:1.5px solid var(--amber);border-radius:10px;padding:8px 12px;font-size:14px;margin:6px 0}
-.layer{font-size:11px;font-weight:800;letter-spacing:1px;color:var(--mute);margin:4px 0}
-.step{border-left:3px solid var(--pink);padding:4px 10px;margin:6px 0;font-size:13.5px}
-.step b{color:var(--navy)}
-.tool{font-family:monospace;font-size:12px;background:var(--card);border-radius:6px;padding:2px 6px}
-.risk-high{border-left:5px solid var(--red);background:#FDE8E8;padding:8px 12px;border-radius:8px;margin:6px 0}
-.risk-medium{border-left:5px solid var(--amber);background:var(--amberL);padding:8px 12px;border-radius:8px;margin:6px 0}
-.risk-info{border-left:5px solid #8A8EA8;background:var(--card);padding:8px 12px;border-radius:8px;margin:6px 0;font-size:14px}
-</style>"""
 st.markdown(CSS, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ state
@@ -65,24 +31,6 @@ S.setdefault("fit_answer", {})
 S.setdefault("last_results", [])
 
 # ------------------------------------------------------------------ helpers
-SILH = {
-    "garment": '<svg width="64" height="104" viewBox="0 0 46 72"><path d="M15 4h16l5 10-5 6 13 48H2L15 20l-5-6z" fill="#fff" opacity=".85"/></svg>',
-    "shirt": '<svg width="92" height="92" viewBox="0 0 60 60"><path d="M20 6l10 6 10-6 14 10-6 10-6-4v32H18V22l-6 4-6-10z" fill="#fff" opacity=".85"/></svg>',
-    "jeans": '<svg width="70" height="104" viewBox="0 0 40 64"><path d="M6 2h28l2 60H24l-4-40-4 40H4z" fill="#fff" opacity=".85"/></svg>',
-    "lamp": '<svg width="80" height="104" viewBox="0 0 50 64"><path d="M10 26 Q25 2 40 26z" fill="#fff" opacity=".9"/><rect x="23" y="26" width="4" height="28" fill="#fff" opacity=".9"/><rect x="14" y="54" width="22" height="5" rx="2" fill="#fff" opacity=".9"/></svg>',
-    "bottle": '<svg width="60" height="104" viewBox="0 0 36 64"><rect x="12" y="2" width="12" height="10" rx="2" fill="#fff" opacity=".9"/><rect x="6" y="12" width="24" height="48" rx="6" fill="#fff" opacity=".9"/></svg>',
-    "cushion": '<svg width="96" height="96" viewBox="0 0 60 60"><rect x="8" y="10" width="44" height="40" rx="10" fill="#fff" opacity=".85"/></svg>',
-}
-def silh(p):
-    t = p["type"]
-    if "shirt" in t or "jacket" in t: k = "shirt"
-    elif "jeans" in t: k = "jeans"
-    elif "lamp" in t: k = "lamp"
-    elif p["category"] == "personal care": k = "bottle"
-    elif "cushion" in t: k = "cushion"
-    else: k = "garment"
-    return f'<div class="pimg" style="background:linear-gradient(160deg,{p["swatch"]}55,{p["swatch"]})">{SILH[k]}</div>'
-
 STAGE_PILL = {0: ("0 · Pass-through", "p-grey"), 1: ("1 · Clear intent", "p-navy"), 2: ("2 · Minor correction", "p-navy"),
               3: ("3 · Major semantic", "p-pink"), 4: ("4 · Ambiguous", "p-amber"), 5: ("5 · No exact match", "p-navy"),
               6: ("6 · Out of scope", "p-grey")}
@@ -190,7 +138,7 @@ def run_search(q, followup=False):
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
     st.markdown("### 👤 Your fit profile")
-    st.caption("Layer 2 uses this on every product, whatever search path you take.")
+    st.caption("Used to recommend your size on every product, whichever way you search.")
     us = st.selectbox("Usual top size", ["Not set"] + SIZE_ORDER, index=3)
     wa = st.selectbox("Usual waist (jeans)", ["Not set"] + WAIST_ORDER, index=0)
     ab = st.selectbox("Brand that fits you best", list(ANCHOR_BRANDS.keys()), index=len(ANCHOR_BRANDS) - 1)
@@ -205,73 +153,75 @@ with st.sidebar:
     st.divider()
     show_trace = st.toggle("Show agent trace", value=True)
     st.markdown(f"**AI model:** {'Gemini (' + MODELS[0] + ')' if API_KEY else 'offline rules (no key set)'}")
-    st.caption("Demo catalog: 25 illustrative products across fashion, lifestyle and personal care.")
+    st.caption("Demo catalog: 25 illustrative products across fashion, lifestyle and personal care. Fit reviews are simulated.")
     st.divider()
-    if st.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True):
-        S.view = "cart"
+    if st.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_side"):
+        S.view = "cart"; st.rerun()
 
-# ------------------------------------------------------------------ header + search
-st.markdown('<div class="ss-top"><div><div class="ss-logo">🔎 Search<b>Sense</b></div><div class="ss-sub">AI mode in the search bar · demo store</div></div>'
-            '<div class="ss-sub">Layer 1: agentic search &nbsp;|&nbsp; Layer 2: fit &amp; return-risk on every path</div></div>', unsafe_allow_html=True)
-
+# ------------------------------------------------------------------ top bar: logo + search
 with st.form("search", clear_on_submit=False, border=False):
-    c1, c2 = st.columns([6, 1])
+    c0, c1, c2 = st.columns([1.5, 7, 1.1], vertical_alignment="center")
+    c0.markdown('<div class="ss-logo">Search<b>Sense</b></div>', unsafe_allow_html=True)
     q = c1.text_input("Search", placeholder="Search, or describe what you need… e.g. 'breathable pastel outfit for a daytime wedding under ₹6,000'",
                       label_visibility="collapsed", key="q")
     go = c2.form_submit_button("Search", use_container_width=True, type="primary")
 if go and q.strip():
     run_search(q.strip())
 
-st.caption("Try a scenario: Rohan (typo) · Priya (complex) · Ananya (size) · ambiguous · no exact match · lifestyle · skincare · out of scope")
-EX = [("Rohan", "wite linnen shirt M"),
-      ("Priya", "breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery"),
-      ("Ananya", "high-waist straight jeans for office"),
-      ("Ambiguous", "outfit for a wedding"),
-      ("No match", "chanderi lehenga for a day wedding under ₹6,000"),
-      ("Lifestyle", "minimal table lamp for a small reading corner, warm light, under 2500"),
-      ("Skincare", "fragrance-free moisturiser for oily acne-prone skin that sits well under sunscreen under 800"),
-      ("Order help", "where is my order")]
-cols = st.columns(len(EX))
-for c, (lbl, ex) in zip(cols, EX):
-    if c.button(lbl, use_container_width=True, key="ex" + lbl):
+EX = [("Rohan", "wite linnen shirt M", "Typo + size"),
+      ("Priya", "breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery", "Complex intent"),
+      ("Ananya", "high-waist straight jeans for office", "Size confidence"),
+      ("Ambiguous", "outfit for a wedding", "Asks one question"),
+      ("No match", "chanderi lehenga for a day wedding under ₹6,000", "Relaxes constraints"),
+      ("Lifestyle", "minimal table lamp for a small reading corner, warm light, under 2500", "Non-fashion"),
+      ("Skincare", "fragrance-free moisturiser for oily acne-prone skin that sits well under sunscreen under 800", "Personal care"),
+      ("Order help", "where is my order", "Out of scope")]
+cols = st.columns([0.55] + [1] * len(EX) + [1.15], vertical_alignment="center")
+cols[0].markdown('<div class="try">Try:</div>', unsafe_allow_html=True)
+for c, (lbl, ex, tip) in zip(cols[1:], EX):
+    if c.button(lbl, use_container_width=True, key="ex" + lbl, help=f"{tip}: {ex}"):
         run_search(ex)
         st.rerun()
+if cols[-1].button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top"):
+    S.view = "cart"; st.rerun()
 
 # ------------------------------------------------------------------ views
 def product_card(p, i=None, checks=None, intent=None):
-    with st.container(border=False):
-        num = f"#{i} · " if i else ""
-        why = f'<div class="why">✦ {html.escape(A.why_this(p, intent))}</div>' if intent else '<div class="why"> </div>'
+    """One grid card: image with rating, brand, name, price, why line, fit badge, honest-note chip, View/Add."""
+    with st.container(border=True):
+        why = f'<div class="why">✦ {html.escape(A.why_this(p, intent))}</div>' if intent else '<div class="why"></div>'
         ck = ""
         if checks:
             ck = '<div class="chk">' + " ".join(("✓ " if ok else "✕ ") + html.escape(n) for n, ok, _ in checks) + "</div>"
-        st.markdown(f'<div class="pcard">{silh(p)}<div class="pbrand">{num}{html.escape(p["brand"])}</div>'
-                    f'<div class="pname">{html.escape(p["name"])}</div><div class="price">₹{p["price"]:,}</div>{why}'
-                    f'{fit_badge(p)}<br>{risky_note(p)}{ck}</div>', unsafe_allow_html=True)
+        st.markdown(f'<span class="pc"></span>{image_block(p, i)}<div class="pbrand">{html.escape(p["brand"])}</div>'
+                    f'<div class="pname" title="{html.escape(p["name"])}">{html.escape(p["name"])}</div>{price_block(p)}{why}'
+                    f'<div class="foot">{fit_badge(p)}<br>{risky_note(p)}{ck}</div>', unsafe_allow_html=True)
         b1, b2 = st.columns(2)
         if b1.button("View", key=f"v{p['id']}{i}", use_container_width=True):
             S.pid, S.view = p["id"], "product"; st.rerun()
-        if b2.button("Add", key=f"a{p['id']}{i}", use_container_width=True):
+        if b2.button("Add", key=f"a{p['id']}{i}", use_container_width=True, type="primary"):
             fa = A.fit_agent(p, S.profile)
             size = (fa or {}).get("size") or p["sizes"][min(2, len(p["sizes"]) - 1)]
             S.cart.append(dict(id=p["id"], size=size)); st.toast(f"Added {p['name']} ({size})"); st.rerun()
 
-def grid(items, intent=None):
-    cols = st.columns(3)
-    for k, it in enumerate(items):
-        p, checks = (it if isinstance(it, tuple) else (it, None))
-        with cols[k % 3]:
-            product_card(p, k + 1, checks, intent)
+def grid(items, intent=None, ncols=4):
+    for r0 in range(0, len(items), ncols):
+        cols = st.columns(ncols)
+        for k, it in enumerate(items[r0:r0 + ncols]):
+            p, checks = (it if isinstance(it, tuple) else (it, None))
+            with cols[k]:
+                product_card(p, r0 + k + 1, checks, intent)
 
 def view_search():
     res = S.result
     if not res:
-        st.info("Type a short query (normal search) or describe what you need in your own words (AI mode). Every product gets a fit check either way.")
+        st.markdown('<div class="empty"><h3>What are you shopping for?</h3>Type a short query, or describe what you need in your own words. '
+                    'Every product gets a size recommendation either way.</div>', unsafe_allow_html=True)
         return
     r = res["route"]
     stage = r["stage"] if r["stage"] != "agent" else res.get("intent", {}).get("stage", 1)
     fixes = "".join(f' &nbsp;<small>“{html.escape(a)}” → <b>{html.escape(b)}</b></small>' for a, b in r.get("fixes", []))
-    st.markdown(f'<div class="router"><b>Query router</b> (light classifier): {pill(stage)} <small>{html.escape(r["reason"])} · {res["t"]:.1f}s</small>{fixes}</div>',
+    st.markdown(f'<div class="router">{pill(stage)}<span>{html.escape(r["reason"])} · {res["t"]:.1f}s</span>{fixes}</div>',
                 unsafe_allow_html=True)
 
     if res["kind"] == "help":
@@ -283,15 +233,18 @@ def view_search():
             u1.markdown(f"Showing results for **{html.escape(r['query'])}**")
             if u2.button(f"Search instead for “{res['query']}”", key="undo"):
                 S.result = dict(res, route=dict(r, fixes=[], stage=0, reason="Undo: original words"), items=[p["id"] for p in A.keyword_search(res["query"])]); st.rerun()
-        st.markdown('<div class="layer">LAYER 1 SKIPPED · NORMAL SEARCH · LAYER 2 FIT CHECK STILL ON</div>', unsafe_allow_html=True)
         items = [PRODUCTS[i] for i in res["items"]]
         S.last_results = res["items"]
-        grid(items) if items else st.warning("No results. Try describing what you need.")
+        if items:
+            st.markdown(f'<div class="rescount"><b>{len(items)}</b> results · normal search, size check on every product</div>', unsafe_allow_html=True)
+            grid(items)
+        else:
+            st.warning("No results. Try describing what you need.")
         return
 
     intent = res["intent"]
     maps = "".join(f'<div class="map">• “{html.escape(m.get("phrase",""))}” → {html.escape(str(m.get("maps_to","")))}</div>' for m in intent.get("mappings", []) or [])
-    st.markdown(f'<div class="aim"><div class="t">✦ AI MODE · HERE\'S WHAT I UNDERSTOOD</div>'
+    st.markdown(f'<div class="aim"><div class="t">✦ What I understood</div>'
                 f'<div class="i">{html.escape(intent.get("interpretation",""))}</div>{maps}</div>', unsafe_allow_html=True)
 
     # clarifier (stage 4)
@@ -316,7 +269,7 @@ def view_search():
         st.markdown(f'<div class="relax">⚖ <b>No exact match.</b> I relaxed: {html.escape(what)}, and kept your budget and other must-haves.</div>', unsafe_allow_html=True)
     S.last_results = [p["id"] for p, _ in items]
     if items:
-        st.markdown('<div class="layer">LAYER 1 · VERIFIED RESULTS &nbsp;+&nbsp; LAYER 2 · FIT CHECK</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="rescount"><b>{len(items)}</b> results, each checked against your must-haves and your size</div>', unsafe_allow_html=True)
         grid(items, intent)
     else:
         st.warning("Nothing in the catalog meets your must-haves.")
@@ -335,7 +288,8 @@ def view_search():
             st.markdown(f'<div class="step"><b>Router</b> · {html.escape(r["label"])} — {html.escape(r["reason"])}</div>', unsafe_allow_html=True)
             for name, arg, out in res["steps"]:
                 st.markdown(f'<div class="step"><b>{html.escape(name)}</b> · <span class="tool">{html.escape(str(arg))}</span><br>{html.escape(str(out))}</div>', unsafe_allow_html=True)
-            st.markdown('<div class="step"><b>Fit agent (Layer 2)</b> · size + confidence computed for every result from fit reviews and your profile</div>', unsafe_allow_html=True)
+            st.markdown('<div class="step"><b>Fit agent (Layer 2)</b> · size + confidence computed for every result from fit reviews and your profile. '
+                        'Fit signals and fit-review counts are simulated in this demo.</div>', unsafe_allow_html=True)
             st.json(intent, expanded=False)
 
 def view_product():
@@ -344,12 +298,13 @@ def view_product():
         S.view = "search"; st.rerun()
     c1, c2 = st.columns([1, 1.4])
     with c1:
-        st.markdown(silh(p).replace("height:130px", "height:360px"), unsafe_allow_html=True)
+        st.markdown(image_block(p, tall=True), unsafe_allow_html=True)
     with c2:
-        st.markdown(f"<div class='pbrand'>{p['brand']}</div><h3 style='margin:0'>{html.escape(p['name'])}</h3>"
-                    f"<div class='price' style='font-size:22px'>₹{p['price']:,}</div>"
-                    f"<div class='why'>{p['fabric'].title()} · {p['colour']} · {', '.join(p['occasions'])} · {p['rating']}★</div>", unsafe_allow_html=True)
-        st.markdown('<div class="layer">LAYER 2 · FIT AGENT</div>', unsafe_allow_html=True)
+        st.markdown(f"<div class='pbrand' style='font-size:18px'>{html.escape(p['brand'])}</div>"
+                    f"<h3 style='margin:0;font-weight:400;color:var(--mute)'>{html.escape(p['name'])}</h3>"
+                    f"<div style='font-size:20px;margin:6px 0'>{price_block(p)}</div>"
+                    f"<div class='why'>{p['fabric'].title()} · {html.escape(p['colour'])} · {html.escape(', '.join(p['occasions']))} · {p['rating']}★</div>", unsafe_allow_html=True)
+        st.markdown('<div class="layer">Size &amp; fit</div>', unsafe_allow_html=True)
         fa = A.fit_agent(p, S.profile)
         if fa:
             if fa["size"]:
@@ -368,7 +323,7 @@ def view_product():
                     st.rerun()
         else:
             st.caption("Fit check not needed for this product.")
-        st.markdown('<div class="layer">HONEST NOTES · FROM REVIEWS</div>', unsafe_allow_html=True)
+        st.markdown('<div class="layer">Honest notes from reviews</div>', unsafe_allow_html=True)
         for n in p["notes"]:
             st.markdown(f'<span class="note">⚠ {html.escape(n)}</span>', unsafe_allow_html=True)
         st.caption("Reviews: " + " · ".join(f"“{r}”" for r in p["reviews"]))
@@ -381,19 +336,21 @@ def view_product():
 def view_cart():
     if st.button("← Back to results"):
         S.view = "search"; st.rerun()
-    st.subheader("🛒 Cart")
+    st.markdown("### Your cart")
     if not S.cart:
         st.info("Your cart is empty."); return
     total = 0
     for k, it in enumerate(S.cart):
         p = PRODUCTS[it["id"]]; total += p["price"]
-        c1, c2, c3 = st.columns([5, 1, 1])
-        c1.markdown(f"**{p['name']}** · size {it['size']}")
-        c2.markdown(f"₹{p['price']:,}")
+        c0, c1, c2, c3 = st.columns([0.6, 5, 1.2, 1], vertical_alignment="center")
+        c0.markdown(image_block(p), unsafe_allow_html=True)
+        c1.markdown(f"<div class='pbrand'>{html.escape(p['brand'])}</div><div class='pname'>{html.escape(p['name'])}</div>"
+                    f"<div class='why'>Size {it['size']}</div>", unsafe_allow_html=True)
+        c2.markdown(price_block(p), unsafe_allow_html=True)
         if c3.button("Remove", key=f"rm{k}"):
             S.cart.pop(k); st.rerun()
-    st.markdown(f"**Total: ₹{total:,}**")
-    st.markdown('<div class="layer">LAYER 2 · PRE-CHECKOUT RETURN-RISK CHECK</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='price' style='font-size:18px;margin:10px 0'>Total: ₹{total:,}</div>", unsafe_allow_html=True)
+    st.markdown('<div class="layer">Pre-checkout return-risk check</div>', unsafe_allow_html=True)
     risks = A.precheckout(S.cart, S.profile)
     if not [r for r in risks if r["level"] != "info"]:
         st.success("No size or bracketing risks found. 👍")

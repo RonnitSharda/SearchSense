@@ -21,31 +21,32 @@ section[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--li
 div[data-testid="stForm"]{border:0;padding:0}
 div[data-testid="stTextInput"] input{height:52px;border-radius:12px;border:1.5px solid var(--line);background:var(--bg);font-size:16px;padding:0 18px}
 div[data-testid="stTextInput"] input:focus{border-color:var(--pink);background:#fff;box-shadow:0 0 0 3px #FF3F6C22}
-div[data-testid="stFormSubmitButton"] button,.stButton>button[kind="primary"]{height:52px;border-radius:12px;font-weight:700;background:var(--pink);border:0;color:#fff}
-div[data-testid="stFormSubmitButton"] button:hover,.stButton>button[kind="primary"]:hover{background:#E8335E;color:#fff}
+div[data-testid="stFormSubmitButton"] button,.stButton button[kind="primary"]{height:52px;border-radius:12px;font-weight:700;background:var(--pink);border:0;color:#fff}
+div[data-testid="stFormSubmitButton"] button:hover,.stButton button[kind="primary"]:hover{background:#E8335E;color:#fff}
 
 /* scenario pills */
 .try{font-size:12px;font-weight:700;letter-spacing:.8px;color:var(--mute);margin:10px 0 4px}
-.stButton>button[kind="secondary"]{border-radius:20px;border:1px solid var(--line);background:#fff;color:var(--ink);font-size:13px;padding:2px 10px;min-height:34px}
-.stButton>button[kind="secondary"]:hover{border-color:var(--pink);color:var(--pink)}
+.stButton button[kind="secondary"]{border-radius:20px;border:1px solid var(--line);background:#fff;color:var(--ink);font-size:13px;padding:2px 4px!important;min-height:34px!important;width:100%}
+.stButton button[kind="secondary"] p,.stButton button[kind="secondary"] .stMarkdownEllipsis{font-size:13px;overflow:visible!important;text-overflow:clip!important}
+.stButton button[kind="secondary"]:hover{border-color:var(--pink);color:var(--pink)}
 
 /* router + AI understanding */
 .router{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12.5px;color:var(--mute);padding:8px 0}
 .pill{display:inline-block;border-radius:20px;padding:3px 11px;font-size:12px;font-weight:700}
 .p-navy{background:var(--navy);color:#fff}.p-pink{background:var(--pink);color:#fff}.p-amber{background:var(--amber);color:#3a2a00}
 .p-green{background:var(--green);color:#fff}.p-grey{background:#94969F;color:#fff}.p-red{background:var(--red);color:#fff}
-.aim{background:linear-gradient(135deg,#FFF0F3,#F4F1FF);border:1px solid #FFD6E0;border-radius:14px;padding:14px 18px;margin:6px 0 12px}
-.aim .t{color:var(--pink);font-weight:800;font-size:11.5px;letter-spacing:1px}
-.aim .i{color:var(--ink);font-size:16px;font-weight:600;margin-top:3px}
-.map{font-size:13px;color:#4A4E63;margin-top:5px}
+.aim{background:#FFF8FA;border:1px solid #FFE3EA;border-left:3px solid var(--pink);border-radius:8px;padding:9px 14px;margin:2px 0 10px}
+.aim .t{color:var(--pink);font-weight:700;font-size:11.5px}
+.aim .i{color:var(--ink);font-size:14.5px;font-weight:500;margin-top:1px}
+.map{font-size:12.5px;color:var(--mute);margin-top:2px}
 .relax{background:var(--amberL);border:1px solid #F8D98A;border-radius:12px;padding:10px 14px;font-size:14px;margin:8px 0}
 .layer{font-size:11px;font-weight:800;letter-spacing:1px;color:var(--mute);margin:14px 0 8px;text-transform:uppercase}
 .rescount{font-size:15px;color:var(--ink);margin:6px 0 10px}.rescount b{font-weight:800}
 
 /* product card (bordered streamlit container) */
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc){border:1px solid var(--line);border-radius:14px;background:#fff;overflow:hidden;transition:box-shadow .15s}
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc):hover{box-shadow:0 6px 22px #282C3F18}
-.pimg{position:relative;aspect-ratio:3/3.6;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;border-radius:10px;margin-bottom:8px}
+CARD{border:1px solid var(--line)!important;border-radius:14px!important;background:#fff;overflow:hidden;transition:box-shadow .15s;height:100%}
+CARD:hover{box-shadow:0 6px 22px #282C3F18}
+.pimg{position:relative;aspect-ratio:3/3.3;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;border-radius:10px;margin-bottom:8px}
 .pimg img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .pimg svg{margin-bottom:10px}
 .rate{position:absolute;left:8px;bottom:8px;background:#fffffff2;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700;color:var(--ink)}
@@ -56,11 +57,21 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc):hover{box-shadow:0 6px 
 .price{font-weight:800;color:var(--ink);font-size:15px}
 .price s{font-weight:400;color:var(--mute);font-size:12.5px;margin-left:6px}
 .price em{font-style:normal;color:#E5833A;font-size:12.5px;font-weight:700;margin-left:6px}
-.why{font-size:12.5px;color:#4A4E63;line-height:1.35;margin:5px 0;min-height:17px}
+.why{font-size:12.5px;color:#4A4E63;line-height:1.35;margin:5px 0;min-height:34px}
+.foot{min-height:96px}
 .badge{display:inline-block;font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:6px;margin:2px 0}
 .b-high{background:var(--greenL);color:#0E706B}.b-medium{background:var(--amberL);color:#8A5A00}.b-low{background:var(--redL);color:var(--red)}
 .note{font-size:11.5px;background:var(--amberL);color:#8A5A00;border-radius:6px;padding:3px 8px;display:inline-block;margin-top:4px}
 .chk{font-size:11px;color:var(--mute);margin-top:4px}
+
+/* editable chips */
+span[data-baseweb="tag"],span[data-tag]{background:var(--pinkL)!important;color:var(--ink)!important;border-radius:16px!important}
+span[data-baseweb="tag"] *,span[data-tag] *{color:var(--ink)!important}
+span[data-tag] svg{stroke:var(--pink)}
+
+/* buttons inside product cards */
+CARD .stButton button{height:36px!important;min-height:36px!important;border-radius:8px!important;font-size:13px;font-weight:700}
+CARD .stButton button[kind="primary"]{background:var(--pink);color:#fff;border:0}
 
 /* trace + risks */
 .step{border-left:3px solid var(--pink);padding:4px 12px;margin:8px 0;font-size:13.5px}
@@ -72,6 +83,12 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.pc):hover{box-shadow:0 6px 
 .empty{text-align:center;padding:48px 10px;color:var(--mute)}
 .empty h3{color:var(--ink);margin-bottom:6px}
 </style>"""
+
+# A bordered st.container is a stVerticalBlock in current Streamlit and a stVerticalBlockBorderWrapper in older releases.
+_CARD = (':is(div[data-testid="stVerticalBlock"]:has(> .element-container .pc),'
+         'div[data-testid="stVerticalBlockBorderWrapper"]:has(> div[data-testid="stVerticalBlock"] > .element-container .pc))')
+CSS = CSS.replace("CARD", _CARD)
+
 
 SILH = {
     "garment": '<svg width="64" height="104" viewBox="0 0 46 72"><path d="M15 4h16l5 10-5 6 13 48H2L15 20l-5-6z" fill="#fff" opacity=".85"/></svg>',
