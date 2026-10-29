@@ -15,6 +15,7 @@ The raw data has NO ratings, sizes, MRP/discount, colour or fabric. What this sc
 Standard library only, so it runs anywhere the app does.
 """
 import csv, gzip, hashlib, re, sys, collections
+from attributes import style_attributes
 
 RAW = "data/myntra_fashion_products.csv.gz"
 OUT = "data/myntra_catalog.csv.gz"
@@ -304,11 +305,11 @@ def derive(row):
     return dict(id="Y" + str(row["sku"]), name=name, brand=clean(row["brand"]), gender=gender, category=cat, type=t, style=style,
                 colour=colour, colour_family=fam, fabric=fab, price=price, occasions="|".join(occ), time=tm, pairs=pairs,
                 sizes="|".join(sizes), fit_signal=sig, fit_reviews=fit_reviews, fit_sim=fit_sim, swatch=swatch, image=image,
-                notes="|".join(notes))
+                notes="|".join(notes), **style_attributes(t, title, desc))
 
 
 FIELDS = ["id", "name", "brand", "gender", "category", "type", "style", "colour", "colour_family", "fabric", "price", "occasions",
-          "time", "pairs", "sizes", "fit_signal", "fit_reviews", "fit_sim", "swatch", "image", "notes"]
+          "time", "pairs", "sizes", "fit_signal", "fit_reviews", "fit_sim", "swatch", "image", "notes", "fit", "pattern", "sleeve", "neck"]
 
 
 def build(raw=RAW, out=OUT):
@@ -352,5 +353,5 @@ if __name__ == "__main__":
     print(f"wrote {len(kept)} rows to {out}")
     for k, v in stats.items():
         print(f"  {k}: {v}")
-    for field in ("category", "gender", "style", "type", "colour_family", "fabric", "time"):
+    for field in ("category", "gender", "style", "type", "colour_family", "fabric", "time", "fit", "pattern", "sleeve", "neck"):
         print(field, dict(collections.Counter(d[field] for d in kept).most_common(40)))

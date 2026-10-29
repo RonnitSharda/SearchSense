@@ -171,8 +171,9 @@ EXAMPLES = [
 
 def _with_type(a):
     """Examples default to a product search; query_type and reply are listed first, as the model should decide them first."""
-    if "soft" in a and "fit" not in a["soft"]:   # every example spells out fit, after fabric_named
-        a = dict(a, soft={k2: v2 for k, v in a["soft"].items() for k2, v2 in ([(k, v), ("fit", None)] if k == "fabric_named" else [(k, v)])})
+    if "soft" in a and "fit" not in a["soft"]:   # every example spells out fit, pattern, sleeve and neck, after fabric_named
+        extra = [("fit", None), ("pattern", None), ("sleeve", None), ("neck", None)]
+        a = dict(a, soft={k2: v2 for k, v in a["soft"].items() for k2, v2 in ([(k, v)] + extra if k == "fabric_named" else [(k, v)])})
     if "soft" in a and "month" not in a["soft"]:   # every example spells out month and weather, right after city
         a = dict(a, soft={k2: v2 for k, v in a["soft"].items() for k2, v2 in ([(k, v), ("month", None), ("weather", None)] if k == "city" else [(k, v)])})
     return {"query_type": a.get("query_type", "product_search"), "reply": a.get("reply"), "confidence": a.get("confidence", "high"),
@@ -278,7 +279,12 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
   - fabric_named: true if the shopper literally named the fabric ("linen shirt"), false if you inferred fabrics from words like
     "breathable" or "winter". Named fabrics are strict; inferred ones also allow listings with no stated fabric.
   - fit: {allowed['fit']} when the shopper describes the cut ("loose jeans", "something less tight" -> relaxed;
-    "skinny jeans" -> slim), else null. A fit word in a follow-up ("loose") changes only the fit.
+    "skinny jeans" -> slim), else null.
+  - pattern: the print or pattern asked for, one of {allowed['pattern']}, else null ("flowery" -> floral; "any print" ->
+    printed; "plain" -> solid).
+  - sleeve: one of {allowed['sleeve']} when asked ("half sleeves" -> short sleeves; "full sleeves" -> long sleeves), else null.
+  - neck: one of {allowed['neck']} when asked, else null.
+    In a follow-up, a word like "loose", "floral" or "sleeveless" changes only that attribute.
   - pairs: "silver" or "gold" when the shopper mentions jewellery or metal tones, else null.
   - needs: only from this list (for beauty and home items):
 {needs}
@@ -367,9 +373,13 @@ def build_response_schema(allowed):
                 "fabrics": arr(_str(allowed["fabrics"])),
                 "fabric_named": {"type": "BOOLEAN"},
                 "fit": _str(allowed["fit"], nullable=True),
+                "pattern": _str(allowed["pattern"], nullable=True),
+                "sleeve": _str(allowed["sleeve"], nullable=True),
+                "neck": _str(allowed["neck"], nullable=True),
                 "pairs": _str(["silver", "gold"], nullable=True),
                 "needs": arr(_str(list(NEEDS)))},
-                "required": ["occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fabric_named", "fit", "pairs", "needs"]},
+                "required": ["occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fabric_named", "fit", "pattern", "sleeve", "neck",
+                             "pairs", "needs"]},
             "mappings": arr({"type": "OBJECT", "properties": {"phrase": _str(), "maps_to": _str()}, "required": ["phrase", "maps_to"]}),
             "clarify": {"type": "OBJECT", "nullable": True, "properties": {"question": _str(), "options": arr(_str())},
                         "required": ["question", "options"]},

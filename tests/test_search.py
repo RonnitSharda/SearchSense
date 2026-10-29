@@ -142,7 +142,9 @@ def test_vectorised_search_matches_reference():
                  colours=random.sample(["lilac", "navy blue", "white", "pink", "mustard"], random.choice([0, 0, 1])),
                  fabric_named=random.choice([True, False]),
                  colour_family=random.sample(["pastel", "dark", "neutral"], random.choice([0, 1])), fabrics=random.sample(fabs, random.choice([0, 2])),
-                 pairs=random.choice([None, "silver"]), fit=random.choice([None, None, "relaxed", "slim"]), needs=[])
+                 pairs=random.choice([None, "silver"]), fit=random.choice([None, None, "relaxed", "slim"]),
+                 pattern=random.choice([None, None, "floral", "printed", "solid"]), sleeve=random.choice([None, None, "sleeveless"]),
+                 neck=random.choice([None, None, "v-neck"]), needs=[])
         ref = np.array([A._hard_ok(p, h)[0] for p in A._PL])
         assert (A._hard_mask(h) == ref).all(), h
         soft = A._all(A._soft_masks(s), A._hard_mask(h))
@@ -226,6 +228,23 @@ def test_loose_becomes_a_fit_filter():
     assert items and fits[0] == "relaxed" and "slim" not in fits, fits   # stated relaxed first, never a stated slim fit
     assert all(any(n == "relaxed fit" for n, _, _ in checks) for _, checks in items)
     assert A.rule_parse("loose jeans for office")["soft"]["fit"] == "relaxed"
+
+
+def test_print_sleeve_and_neck_filters():
+    # "floral sleeveless dress": both become filters, checked per product; "printed" accepts any print; a follow-up keeps the rest
+    it = A.validate_intent({"hard": {"category": "fashion", "gender": "women", "types": ["dress"]},
+                            "soft": {"pattern": "flowery", "sleeve": "strapless", "neck": "V neck"}})[0]
+    assert (it["soft"]["pattern"], it["soft"]["sleeve"], it["soft"]["neck"]) == ("floral", "sleeveless", "v-neck")
+    it["soft"]["neck"] = None
+    items = A.search(A.enrich(it)[0], max_results=8)[0]
+    assert items and items[0][0]["pattern"] == "floral" and items[0][0]["sleeve"] == "sleeveless", items[0][0]["name"]
+    assert all(p["pattern"] in ("floral", "") and p["sleeve"] in ("sleeveless", "") for p, _ in items)
+    printed = A.search(A.enrich(A.validate_intent({"hard": {"category": "fashion", "types": ["top"]}, "soft": {"pattern": "printed"}})[0])[0], max_results=12)[0]
+    assert {p["pattern"] for p, _ in printed} - {""} <= A.PRINTS and not any(p["pattern"] == "solid" for p, _ in printed)
+    prev = {"hard": {"category": "fashion", "gender": "women", "types": ["kurta"]}, "soft": {"pattern": "floral"}}
+    it, kept = A.merge_followup(A.validate_intent({"hard": {}, "soft": {"sleeve": "half sleeves"}})[0], prev)
+    assert it["soft"]["sleeve"] == "short sleeves" and it["soft"]["pattern"] == "floral" and it["hard"]["types"] == ["kurta"]
+    assert A.rule_parse("floral sleeveless top")["soft"]["pattern"] == "floral"
 
 
 def test_fast():

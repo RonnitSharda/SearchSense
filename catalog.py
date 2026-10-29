@@ -8,7 +8,8 @@
   fit signals are SIMULATED (no ratings, MRP or fit reviews exist in the source data).
 If the data file is missing the app falls back to the 25 demo products only.
 """
-import csv, gzip, os, re
+import csv, gzip, os
+from attributes import style_attributes
 
 BREATHABLE = {"cotton", "linen", "chanderi", "mul cotton", "khadi", "cotton-silk", "rayon"}
 HEAVY = {"velvet", "silk", "brocade", "georgette", "denim", "polyester"}
@@ -146,7 +147,9 @@ def _load_myntra(path):
                 occasions=r["occasions"].split("|"), time=r["time"], pairs=r["pairs"], sizes=r["sizes"].split("|"),
                 fit_signal=int(r["fit_signal"]), fit_reviews=int(r["fit_reviews"]), fit_sim=r["fit_sim"] == "1",
                 rating=None, mrp=None, swatch=r["swatch"], image=r["image"], notes=[n for n in r["notes"].split("|") if n],
-                reviews=[], source="myntra"))
+                reviews=[], source="myntra",
+                # read from title + description by build_catalog.py; older files without these columns fall back to the title
+                **({k: r[k] for k in ("fit", "pattern", "sleeve", "neck")} if "neck" in r else style_attributes(r["type"], r["name"]))))
     return out
 
 
@@ -159,14 +162,9 @@ if os.path.exists(DATA_FILE):
     except Exception as e:  # corrupt / partial file: never break the app
         CATALOG_SOURCE = f"demo only (could not read Myntra data: {str(e)[:60]})"
 
-# Fit stated in the listing title (relaxed / regular / slim), or "" when the listing doesn't say. Palazzos, shararas and
-# similar cuts are relaxed by design.
-_FIT_RULES = [("relaxed", r"\b(relaxed|loose|oversized|baggy|wide[- ]leg|flared|boyfriend|mom fit|boxy|palazzos?)\b"),
-              ("slim", r"\b(slim|skinny|bodycon|fitted|tapered|muscle fit)\b"),
-              ("regular", r"\b(regular fit|straight fit|straight|classic fit)\b")]
-for _p in PRODUCTS.values():
-    _n = _p["name"].lower()
-    _p["fit"] = "relaxed" if _p["type"] in ("palazzo", "sharara set") else next((f for f, rx in _FIT_RULES if re.search(rx, _n)), "")
+# demo products: fit, print, sleeves and neckline from their name and notes (Myntra rows bring their own, see above)
+for _p in P:
+    _p.update(style_attributes(_p["type"], _p["name"], " ".join(_p["notes"])))
 
 # Size anchors from other brands (illustrative brand-to-platform offsets)
 # How a brand's labels compare with ours (illustrative): our size = the brand's size + offset.

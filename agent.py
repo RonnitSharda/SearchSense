@@ -5,6 +5,7 @@ import requests
 from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
                      OCCASION_RULES, MONTHS, WARM, WARM_LAYERS)
 import base64
+from attributes import FITS, PATTERNS, SLEEVES, NECKS, PRINTS
 from prompt import NEEDS, build_system_prompt, build_response_schema, build_label_prompt
 
 # ------------------------------------------------------------------ vocabulary
@@ -170,7 +171,7 @@ ALLOWED = dict(
     fabrics=sorted({p["fabric"] for p in PRODUCTS.values() if p["fabric"]}),
     types=sorted({p["type"] for p in PRODUCTS.values()}),
     pairs=["silver", "gold", "any"],
-    fit=["relaxed", "regular", "slim"],
+    fit=FITS, pattern=PATTERNS, sleeve=SLEEVES, neck=NECKS,
     needs=list(NEEDS),
 )
 TYPES_BY_CATEGORY = {c: sorted({p["type"] for p in PRODUCTS.values() if p["category"] == c}) for c in ALLOWED["category"]}
@@ -207,7 +208,19 @@ RESPONSE_SCHEMA = build_response_schema(ALLOWED)
 
 
 _HARD_KEEP = ("category", "gender", "budget_min", "budget_max", "size", "types", "style")
-_SOFT_KEEP = ("occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fit", "pairs", "needs")
+_SOFT_KEEP = ("occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fit", "pattern", "sleeve", "neck",
+              "pairs", "needs")
+# style attributes read from each listing (attributes.py): a stated different value fails, an unstated one is allowed
+# (ranked lower); a request for "printed" accepts any print
+STYLE_ATTRS = ("fit", "pattern", "sleeve", "neck")
+
+
+def _style_ok_values(attr, want):
+    return sorted(PRINTS) if attr == "pattern" and want == "printed" else [want]
+
+
+def _style_label(attr, want):
+    return {"fit": f"{want} fit", "pattern": "print" if want == "printed" else f"{want}"}.get(attr, want)
 
 
 def merge_followup(intent, prev):
@@ -415,6 +428,14 @@ def rule_parse(query, history=None):
     soft["fit"] = next((f for f, rx in (("relaxed", r"\b(loose|relaxed|baggy|oversized|wide[- ]leg|comfy fit)\b"),
                                          ("slim", r"\b(slim|skinny|fitted|tight)\b"), ("regular", r"\b(regular fit|straight)\b"))
                         if re.search(rx, newq)), None)
+    for attr, rules in (("pattern", (("floral", r"\bflor(al|a)\b|\bflower"), ("striped", r"\bstripe"), ("checked", r"\bcheck"),
+                                     ("polka dots", r"\bpolka"), ("embroidered", r"\bembroider"), ("printed", r"\bprint"),
+                                     ("solid", r"\b(solid|plain)\b"))),
+                        ("sleeve", (("sleeveless", r"sleeveless|strappy"), ("3/4 sleeves", r"3/4|three[- ]quarter"),
+                                    ("long sleeves", r"full[- ]sleeve|long[- ]sleeve"), ("short sleeves", r"half[- ]sleeve|short[- ]sleeve"))),
+                        ("neck", (("v-neck", r"\bv[- ]neck"), ("round neck", r"round neck"), ("off-shoulder", r"off[- ]shoulder"),
+                                  ("mandarin collar", r"mandarin"), ("collar", r"\bcollar")))):
+        soft[attr] = next((v for v, rx in rules if re.search(rx, newq)), None)
     soft["city"] = next((c for c in sorted(_PLACES) if re.search(rf"\b{c}\b", q)), None)   # no weather offline: that needs the AI
     soft["month"] = next((m for m in MONTHS if re.search(rf"\b{m[:3]}(?:{m[3:]})?\b", q)), None)
     for cf in ALLOWED["colour_family"]:
@@ -458,7 +479,13 @@ VALUE_ALIASES = {"male": "men", "man": "men", "gents": "men", "mens": "men", "fe
                  "diwali": "festive", "festival": "festive", "work": "office", "formal": "office", "night": "evening",
                  "daytime": "day", "morning": "day", "afternoon": "day", "home decor": "home decor",
                  "loose": "relaxed", "baggy": "relaxed", "oversized": "relaxed", "wide": "relaxed", "wide leg": "relaxed",
-                 "comfort": "relaxed", "skinny": "slim", "fitted": "slim", "tight": "slim", "straight": "regular", "classic": "regular"}
+                 "comfort": "relaxed", "skinny": "slim", "fitted": "slim", "tight": "slim", "straight": "regular", "classic": "regular",
+                 "flowery": "floral", "flower": "floral", "flowers": "floral", "print": "printed", "prints": "printed", "stripes": "striped",
+                 "stripe": "striped", "checks": "checked", "check": "checked", "plaid": "checked", "plain": "solid", "polka": "polka dots",
+                 "embroidery": "embroidered", "half sleeves": "short sleeves", "short sleeve": "short sleeves",
+                 "full sleeves": "long sleeves", "long sleeve": "long sleeves", "three-quarter sleeves": "3/4 sleeves",
+                 "strapless": "sleeveless", "v neck": "v-neck", "crew neck": "round neck", "mandarin": "mandarin collar",
+                 "off shoulder": "off-shoulder", "turtle neck": "high neck", "halter": "halter neck"}
 
 
 def _closest(value, allowed, cutoff=0.82):
@@ -541,9 +568,13 @@ def validate_intent(intent):
         h["size"] = None
 
     one(s, "occasion", ALLOWED["occasion"]); one(s, "time", ALLOWED["time"])
-    s["fit"] = VALUE_ALIASES.get(str(s.get("fit") or "").lower().strip(), str(s.get("fit") or "").lower().strip()) or None
-    if s["fit"] not in ALLOWED["fit"] + [None]:
-        notes.append(f"fit: “{s['fit']}” → dropped"); s["fit"] = None
+    for attr in STYLE_ATTRS:   # fit, print, sleeves, neckline: one allowed value or nothing
+        v = str(s.get(attr) or "").lower().strip()
+        v = VALUE_ALIASES.get(v, v) or None
+        if v and v not in ALLOWED[attr]:
+            c = _closest(v, ALLOWED[attr], cutoff=0.75)
+            notes.append(f"{attr}: “{v}” → {c or 'dropped'}"); v = c
+        s[attr] = v
     if s.get("pairs") not in ("silver", "gold"): s["pairs"] = None
     many(s, "colour_family", ALLOWED["colour_family"])
     many(s, "fabrics", ALLOWED["fabrics"])
@@ -707,8 +738,10 @@ def check_soft(p, s):
         checks.append(("colour " + "/".join(s["colours"]), _colour_ok(p, s["colours"]), p["colour"]))
     if s.get("colour_family"):
         checks.append(("colour", p["colour_family"] in s["colour_family"], p["colour"]))
-    if s.get("fit"):   # None = the listing doesn't say its fit (allowed, ranked lower)
-        checks.append((f"{s['fit']} fit", (p["fit"] == s["fit"]) if p.get("fit") else None, p.get("fit") or "not stated"))
+    for attr in STYLE_ATTRS:   # None = the listing doesn't say (allowed, ranked lower)
+        if s.get(attr):
+            ok = (p[attr] in _style_ok_values(attr, s[attr])) if p.get(attr) else None
+            checks.append((_style_label(attr, s[attr]), ok, p.get(attr) or "not stated"))
     if s.get("occasion") and s["occasion"] not in ("home", "daily"):
         checks.append(("occasion", s["occasion"] in p["occasions"], "/".join(p["occasions"][:2])))
     if s.get("time") and s["time"] != "any":
@@ -742,7 +775,7 @@ _CFAM, _CFAM_M = _coded("colour_family")
 _TIME, _TIME_M = _coded("time")
 _PAIR, _PAIR_M = _coded("pairs")
 _BRAND, _BRAND_M = _coded("brand")
-_FIT, _FIT_M = _coded("fit")
+_STYLE = {a: _coded(a) for a in STYLE_ATTRS}   # fit / pattern / sleeve / neck -> (codes, mapping)
 _PRICE = np.array([p["price"] for p in _PL], dtype=np.int64)
 # rated products rank above unrated ones (the Myntra data has no ratings); the jitter is a stable tie-break
 _RATING = np.array([(p.get("rating") or 0) / 10 for p in _PL])
@@ -795,7 +828,10 @@ def _soft_masks(s):
             _COLOUR_M[key] = np.array([any(t in c for t in targets) for c in _COLOUR_STR])
         out.append(_COLOUR_M[key])
     if s.get("colour_family"): out.append(_isin(_CFAM, _CFAM_M, s["colour_family"]))
-    if s.get("fit"): out.append(_isin(_FIT, _FIT_M, [s["fit"], ""]))
+    for attr in STYLE_ATTRS:
+        if s.get(attr):
+            codes, mapping = _STYLE[attr]
+            out.append(_isin(codes, mapping, _style_ok_values(attr, s[attr]) + [""]))
     if s.get("occasion") and s["occasion"] not in ("home", "daily"): out.append(_OCC_M.get(s["occasion"], _ZERO))
     if s.get("time") and s["time"] != "any": out.append(_isin(_TIME, _TIME_M, [s["time"], "any"]))
     if s.get("pairs") and s["pairs"] != "any": out.append(_isin(_PAIR, _PAIR_M, [s["pairs"], "any"]))
@@ -826,7 +862,7 @@ def _top(idx, score, k, per_brand):
 
 
 # weakest first (solution doc: colour shade, fabric, pairing, style words); occasion type is near-hard, so it goes last
-RELAX_ORDER = ["colours", "colour_family", "fabrics", "fit", "pairs", "time", "occasion"]
+RELAX_ORDER = ["colours", "colour_family", "fabrics", "neck", "sleeve", "fit", "pattern", "pairs", "time", "occasion"]
 
 
 def search(intent, min_results=2, max_results=6):
@@ -859,8 +895,10 @@ def search(intent, min_results=2, max_results=6):
         trace.append(f"Verifier: too few matches, relaxed '{pick}' and searched again")
     # listings that only pass because their fabric is unknown rank below ones that state a matching fabric
     unknown = (_FAB == _FAB_M.get("", -1)) * 0.3 if s.get("fabrics") and not s.get("fabric_named") else 0
-    if s.get("fit"):   # listings that say "relaxed fit" rank above ones that don't say
-        unknown = unknown + (_FIT == _FIT_M.get("", -1)) * 0.3
+    for attr in STYLE_ATTRS:   # listings that say "floral" / "sleeveless" rank above ones that don't say, whatever the rating
+        if s.get(attr):
+            codes, mapping = _STYLE[attr]
+            unknown = unknown + (codes == mapping.get("", -1)) * 0.5
     score = _RATING + prefer * 0.5 + prefer_t * 1.0 + _JITTER - unknown
     if relaxed:
         n_exact = int(exact.sum())
@@ -1172,8 +1210,10 @@ def why_this(p, intent):
         bits.append(f"in {p['colour']}")
     if s.get("colour_family") and p["colour_family"] in s["colour_family"]:
         bits.append(f"{p['colour']} suits {s.get('time') or 'the'} {s.get('occasion') or 'look'}".replace("the look", "the look"))
-    if s.get("fit") and p.get("fit") == s["fit"]:
-        bits.append(f"{s['fit']} fit")
+    for attr in STYLE_ATTRS:
+        if s.get(attr) and p.get(attr) in _style_ok_values(attr, s[attr]):
+            bits.append(f"{p[attr]} print" if attr == "pattern" and p[attr] not in ("solid", "embroidered", "self design") else
+                        f"{p[attr]} fit" if attr == "fit" else p[attr])
     if s.get("pairs") == "silver" and p["pairs"] in ("silver", "any"):
         bits.append("works with silver")
     h = intent.get("hard", {})
