@@ -8,7 +8,7 @@
   fit signals are SIMULATED (no ratings, MRP or fit reviews exist in the source data).
 If the data file is missing the app falls back to the 25 demo products only.
 """
-import csv, datetime, gzip, os
+import csv, gzip, os
 
 BREATHABLE = {"cotton", "linen", "chanderi", "mul cotton", "khadi", "cotton-silk", "rayon"}
 HEAVY = {"velvet", "silk", "brocade", "georgette", "denim", "polyester"}
@@ -163,38 +163,6 @@ if os.path.exists(DATA_FILE):
 ANCHOR_BRANDS = {"Zara": 0, "H&M": 0, "Uniqlo": +1, "Levi's": 0, "W": -1, "Biba": 0, "FabIndia": 0, "None / not sure": None}
 
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
-
-# Mocked weather tool: typical monthly mean temperature (°C, approximate climate normals) and the humid months per city.
-# North India is cold in winter (Jaipur and Delhi nights drop below 10°C in Dec-Jan); the coast is warm and humid all year.
-_CLIMATE = {
- "mumbai":    ([24, 25, 27, 29, 30, 29, 28, 27, 28, 29, 28, 26], set(range(1, 13))),
- "chennai":   ([25, 26, 28, 31, 33, 32, 31, 30, 30, 28, 26, 25], set(range(1, 13))),
- "kolkata":   ([19, 23, 28, 31, 31, 30, 29, 29, 29, 28, 24, 20], set(range(3, 11))),
- "delhi":     ([14, 17, 23, 29, 33, 33, 31, 30, 29, 26, 20, 15], {7, 8, 9}),
- "jaipur":    ([15, 18, 24, 30, 34, 33, 30, 28, 28, 26, 21, 16], {7, 8}),
- "bengaluru": ([21, 23, 26, 27, 27, 24, 23, 23, 24, 23, 22, 21], set()),
- "pune":      ([21, 23, 26, 29, 29, 26, 24, 24, 24, 25, 23, 21], {6, 7, 8, 9}),
- "hyderabad": ([22, 25, 28, 31, 33, 29, 27, 26, 26, 25, 23, 21], {7, 8, 9}),
-}
-
-
-def weather(city, month=None):
-    """Typical weather for a city in a month (1-12; None = this month). climate is one of cold / cool / mild / warm / hot / humid."""
-    c = _CLIMATE.get((city or "").lower())
-    if not c:
-        return None
-    month = month or datetime.date.today().month
-    t = c[0][month - 1]
-    if t <= 17: climate, note = "cold", "cold, especially mornings and nights"
-    elif t <= 21: climate, note = "cool", "cool, with chilly evenings"
-    elif month in c[1] and t >= 24: climate, note = "humid", "hot and humid" if t >= 28 else "warm and humid"
-    elif t >= 30: climate, note = "hot", "hot and dry"
-    elif t >= 26: climate, note = "warm", "warm"
-    else: climate, note = "mild", "mild"
-    return dict(climate=climate, temp=f"about {t}°C", note=note, month=MONTHS[month - 1].title())
-
-
-WEATHER = {city: weather for city in _CLIMATE}   # city names the parsers look for
 
 WARM = {"wool", "fleece", "velvet", "acrylic"}            # fabrics for cold weather
 WARM_LAYERS = ["jacket", "sweater", "sweatshirt", "blazer"]   # types to rank first when it's cold

@@ -1,9 +1,9 @@
 """SearchSense agent: router, Gemini intent agent, tools, verifier, fit layer."""
-import json, re, time, difflib, zlib, collections, threading
+import json, re, time, difflib, zlib, collections, threading, datetime
 import numpy as np
 import requests
 from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
-                     WEATHER, OCCASION_RULES, MONTHS, WARM, WARM_LAYERS, weather)
+                     OCCASION_RULES, MONTHS, WARM, WARM_LAYERS)
 import base64
 from prompt import NEEDS, build_system_prompt, build_response_schema, build_label_prompt
 
@@ -17,6 +17,9 @@ for p in PRODUCTS.values():
     if p.get("source") == "demo":
         _DEMO_TOKENS |= toks
 # words from the data must appear on >= 3 products (or be demo words), so one-off brand fragments aren't "correct" spellings
+# place names are vocabulary only (so the spell-checker leaves them alone); their weather comes from the AI
+_PLACES = set("""mumbai delhi pune jaipur chennai kolkata bengaluru bangalore hyderabad goa manali shimla leh ladakh srinagar
+ kashmir darjeeling gangtok ooty munnar mussoorie nainital udaipur rishikesh coorg kodaikanal""".split())
 _STATIC_VOCAB = _DEMO_TOKENS | set("""for a an the in and or with under below above size sizes men women mens womens
  kurta kurti shirt jeans lehenga saree dress set lamp moisturiser sunscreen jacket white black blue
  green pink yellow red beige ivory pastel cotton linen silk wedding haldi office casual party festive
@@ -26,7 +29,7 @@ _STATIC_VOCAB = _DEMO_TOKENS | set("""for a an the in and or with under below ab
  humid breathable daytime pastel sangeet haldi brunch moisturizer moisturiser chanderi
  gym running run workout yoga sports sport training jogging trek trekking hiking travel beach swimming cycling
  i im my me want need needs looking show find buy clothes clothing trip trips vacation holiday holidays tour visit visiting
- winter summer cold hot rainy monsoon chilly cool weather layers""".split()) | set(MONTHS) | set(WEATHER)   # hand-written words win spelling ties
+ winter summer cold hot rainy monsoon chilly cool weather layers""".split()) | set(MONTHS) | _PLACES   # hand-written words win spelling ties
 VOCAB = {w for w, n in _TOKEN_FREQ.items() if n >= 3} | _STATIC_VOCAB
 # spelling candidates are bucketed by first letter so correction stays fast with thousands of words
 _VOCAB_BY_FIRST = collections.defaultdict(list)
@@ -197,7 +200,8 @@ def colour_targets(colour):
     return [colour] + COLOUR_SYNONYMS.get(words[0], [])
 
 
-SYSTEM = build_system_prompt(ALLOWED, TYPES_BY_CATEGORY, sorted(set(COLOUR_WORDS) | set(COLOUR_SYNONYMS)))
+SYSTEM = build_system_prompt(ALLOWED, TYPES_BY_CATEGORY, sorted(set(COLOUR_WORDS) | set(COLOUR_SYNONYMS)),
+                            this_month=datetime.date.today().strftime("%B"))
 RESPONSE_SCHEMA = build_response_schema(ALLOWED)
 
 
@@ -206,7 +210,7 @@ def _compact_previous(prev):
     if not prev: return ""
     out = {}
     for sec in ("hard", "soft"):
-        d = {k: v for k, v in (prev.get(sec) or {}).items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "prefer_types", "climate")}
+        d = {k: v for k, v in (prev.get(sec) or {}).items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "prefer_types", "climate", "weather", "layer_tip")}
         if d: out[sec] = d
     return f"[Previous search constraints: {json.dumps(out, ensure_ascii=False)}] " if out else ""
 
@@ -256,14 +260,34 @@ def _log_call(purpose, model, t0, r=None, err=None, body=None):
     CALL_LOG.append(d)
 
 
+# Reliability: free-tier requests can queue for minutes (we saw 350s). Each call gets a time limit; a model that times
+# out or is refused (quota, overload) is tried last for a while, and the last model that answered is tried first.
+TIMEOUT = (5, 20)                      # seconds: connect, answer
+COOLDOWN = {429: 60, "timeout": 300}   # quota refusals often clear within a minute; a queueing model stays at the back longer
+_LAST_OK, _DOWN_UNTIL = [None], {}
+
+
+def model_order(models):
+    """Last model that answered first; models that failed recently go last (never dropped: a slow answer beats none)."""
+    now = time.time()
+    return sorted(models, key=lambda m: (_DOWN_UNTIL.get(m, 0) > now, m != _LAST_OK[0]))
+
+
 def _post_logged(purpose, model, url, body):
     t0 = time.time()
     try:
-        r = requests.post(url, json=body)   # no time limit
+        r = requests.post(url, json=body, timeout=TIMEOUT)
     except Exception as e:
-        _log_call(purpose, model, t0, err=e, body=body)
-        raise
+        timed_out = isinstance(e, requests.Timeout)
+        _DOWN_UNTIL[model] = time.time() + COOLDOWN["timeout"]
+        err = RuntimeError(f"no answer within {TIMEOUT[1]}s, trying the next model") if timed_out else e
+        _log_call(purpose, model, t0, err=err, body=body)
+        raise err
     _log_call(purpose, model, t0, r, body=body)
+    if r.status_code == 200:
+        _LAST_OK[0] = model; _DOWN_UNTIL.pop(model, None)
+    elif r.status_code == 429 or r.status_code >= 500:
+        _DOWN_UNTIL[model] = time.time() + COOLDOWN.get(r.status_code, COOLDOWN["timeout"])
     return r
 
 
@@ -284,7 +308,7 @@ def call_gemini(api_key, model, query, history=None, previous=None, use_schema=T
         "contents": [{"role": "user", "parts": [{"text": text}]}],
         "generationConfig": gen,
     }
-    r = _post_logged("search intent" if use_schema else "search intent (retry without schema)", model, url, body)   # no time limit: quality over speed
+    r = _post_logged("search intent" if use_schema else "search intent (retry without schema)", model, url, body)
     if r.status_code == 400 and use_schema:       # model that rejects the schema: the prompt alone still works
         return call_gemini(api_key, model, query, history, previous, use_schema=False)
     if r.status_code != 200:
@@ -353,8 +377,7 @@ def rule_parse(query, history=None):
                 maps.append(dict(phrase=word, maps_to=f"occasion {occ}" + (f", {tm}" if tm else "")))
     if "daytime" in q or "day " in q or "morning" in q: soft["time"] = "day"
     if "evening" in q or "night" in q: soft["time"] = "evening"
-    for c in WEATHER:
-        if c in q: soft["city"] = c
+    soft["city"] = next((c for c in sorted(_PLACES) if re.search(rf"\b{c}\b", q)), None)   # no weather offline: that needs the AI
     soft["month"] = next((m for m in MONTHS if re.search(rf"\b{m[:3]}(?:{m[3:]})?\b", q)), None)
     for cf in ALLOWED["colour_family"]:
         if cf in q: soft["colour_family"].append(cf)
@@ -489,6 +512,7 @@ def validate_intent(intent):
     s["fabric_named"] = bool(s.get("fabric_named"))
     s["city"] = (s.get("city") or None) and str(s["city"]).lower()
     s["month"] = _month(s.get("month"))
+    s["weather"] = _valid_weather(s.get("weather"))
     it["hard"], it["soft"] = h, s
 
     try:
@@ -515,7 +539,7 @@ def understand(query, api_key, models, history=None, previous=None):
     log = []
     out, used = None, "offline rules"
     if api_key:
-        for model in models:
+        for model in model_order(models):
             t0 = time.time()
             try:
                 out = call_gemini(api_key, model, query, history, previous)
@@ -543,10 +567,19 @@ def _month(v):
     return next((m for m in MONTHS if v and (v == m or v == m[:3])), None)
 
 
-def weather_tool(city, month=None):
-    """Typical weather for the city in the month of the trip or event (this month if none was given)."""
-    m = _month(month)
-    return weather(city, MONTHS.index(m) + 1 if m else None)
+CLIMATES = ("cold", "cool", "mild", "warm", "hot", "humid")
+
+
+def _valid_weather(w):
+    """The AI's weather estimate for the place and month: {climate, temp_c, note}, or None."""
+    if not isinstance(w, dict) or str(w.get("climate") or "").lower() not in CLIMATES:
+        return None
+    try:
+        t = int(round(float(w.get("temp_c")))) if w.get("temp_c") not in (None, "") else None
+    except (TypeError, ValueError):
+        t = None
+    return dict(climate=str(w["climate"]).lower(), temp_c=t if t is None or -30 <= t <= 50 else None,
+                note=str(w.get("note") or "").strip()[:80])
 
 
 def occasion_tool(occasion, time_):
@@ -555,14 +588,15 @@ def occasion_tool(occasion, time_):
 
 
 def enrich(intent):
-    """Context tools: weather + occasion rules add soft preferences."""
+    """Context: the AI's weather estimate for the place and month, and occasion rules, add soft preferences."""
     soft = intent.setdefault("soft", {})
     calls = []
-    w = weather_tool(soft.get("city"), soft.get("month"))
+    w = soft.get("weather")
     if soft.get("city"):
-        when = soft.get("month") or "this month"
-        calls.append(("weather_tool", f"city={soft['city']}, month={when}",
-                      f"{w['note']}, {w['temp']} in {w['month']}" if w else "no data"))
+        when = (soft.get("month") or datetime.date.today().strftime("%B")).title()
+        temp = f", about {w['temp_c']}°C" if w and w.get("temp_c") is not None else ""
+        calls.append(("weather (AI estimate)", f"{soft['city']}, {when}",
+                      f"{w['note'] or w['climate']}{temp} in {when}" if w else "not estimated"))
     soft["climate"] = w["climate"] if w else None
     clothes = intent.get("hard", {}).get("category") in (None, "fashion")
     if w and w["climate"] in ("humid", "hot") and not soft.get("fabric_named"):
@@ -570,8 +604,11 @@ def enrich(intent):
     if w and w["climate"] in ("cold", "cool") and clothes:
         if not soft.get("fabric_named"):   # warm fabrics replace any 'breathable' guess
             soft["fabrics"] = sorted(set(soft.get("fabrics") or []) - BREATHABLE | WARM)
-        if not intent.get("hard", {}).get("types"):   # no product named: warm layers rank first, nothing is filtered out
+        types = intent.get("hard", {}).get("types") or []
+        if not types:   # no product named: warm layers rank first, nothing is filtered out
             soft["prefer_types"] = WARM_LAYERS
+        elif not any(t in WARM_LAYERS for t in types):   # "t-shirts for Manali": keep the t-shirts, suggest a warm layer
+            soft["layer_tip"] = True
     occ = occasion_tool(soft.get("occasion"), soft.get("time"))
     if soft.get("occasion"):
         calls.append(("occasion_rules", f"{soft.get('occasion')}, {soft.get('time') or 'day'}", occ["tip"] if occ else "no rule"))
@@ -911,7 +948,7 @@ def read_image(image_bytes, mime, api_key, models):
                 {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_bytes).decode()}},
                 {"text": LABEL_PROMPT}]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1}}
-    for model in models:
+    for model in model_order(models):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         try:
             r = _post_logged("read photo", model, url, body)
@@ -979,7 +1016,7 @@ def ask_product(p, question, api_key, models):
               "what the shopper could check; never invent facts, measurements, policies or delivery dates. Reply in at most "
               "2 short sentences, in the shopper's language.\n\nProduct data: " + json.dumps(_product_facts(p), ensure_ascii=False)
               + "\n\nShopper's question: " + question)
-    for model in models:
+    for model in model_order(models):
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             r = _post_logged("product question", model, url, {"contents": [{"role": "user", "parts": [{"text": prompt}]}],

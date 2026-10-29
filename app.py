@@ -599,8 +599,8 @@ TEST_CASES = [
          expect="“wite linnen” is fixed to “white linen” without asking; shirts stocked in M; fit badge on every card."),
     dict(name="Priya", icon="🌸", tag="Stage 3 · complex intent", profile="Priya",
          query="breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery",
-         tests="Subjective words mapped to attributes, plus weather and occasion tools.",
-         expect="Breathable pastel ethnic sets under ₹6,000; the trace shows the Mumbai weather and day-wedding rules."),
+         tests="Subjective words mapped to attributes, plus the AI's weather estimate and the occasion rules.",
+         expect="Breathable pastel ethnic sets under ₹6,000; the trace shows the Mumbai weather (AI estimate) and day-wedding rules."),
     dict(name="Ananya", icon="👖", tag="Stage 1 · fit", query="high-waist straight jeans for office", profile="Ananya",
          tests="Fit agent when there is no size history.",
          expect="Ananya returned jeans in 30 for being too small, so the fit agent starts from 32 and adjusts for each pair "
@@ -970,7 +970,8 @@ def view_admin():
     with st.expander("Configuration"):
         st.markdown(f"- **Catalog:** {html.escape(CATALOG_SOURCE)} · {len(PRODUCTS):,} products\n"
                     f"- **Models (GEMINI_MODELS):** {', '.join(MODELS)}\n"
-                    f"- **Thinking:** the model's default (no cap) · **Time limit per AI call:** none\n"
+                    f"- **Thinking:** the model's default (no cap) · **Time limit per AI call:** {A.TIMEOUT[1]}s, then the next model "
+                    f"(order now: {', '.join(A.model_order(MODELS))})\n"
                     f"- **AI answers cached:** {len(_intent_cache())} (identical searches skip Gemini)\n"
                     f"- **This visitor:** {S.sid} · Streamlit {st.__version__} · Python {sys.version.split()[0]}")
 
@@ -1164,7 +1165,7 @@ def _why_notes(res, intent=None):
         notes.append(f"“{m.get('phrase', '')}” → {m.get('maps_to', '')}")
     for name, arg, out in res.get("steps", []):
         if name == "Profile": notes.append(f"{out.split(' (')[0].replace('gender = ', '').title()} from your profile")
-        if name == "Context tool" and "weather" in arg: notes.append(f"weather: {out}")
+        if name == "Context tool" and "weather" in arg: notes.append(f"weather (AI estimate): {out}")
     return notes[:4]
 
 
@@ -1204,7 +1205,7 @@ def agent_steps(res, products, relaxed=None, removed=()):
     it = res["intent"]
     h, s = it.get("hard", {}), it.get("soft", {})
     nh = sum(1 for k, v in h.items() if v not in (None, [], ""))
-    ns = sum(1 for k, v in s.items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "prefer_types", "climate", "fabric_named"))
+    ns = sum(1 for k, v in s.items() if v not in (None, [], "", False) and k not in ("prefer_colour_family", "prefer_types", "climate", "weather", "layer_tip", "fabric_named"))
     model = res.get("model", "")
     memory = " · used previous search" if any("previous search" in o for o in find("Intent & constraints")) else ""
     fixes = find("Validator")
@@ -1240,6 +1241,8 @@ def _quick_refines(res, products):
     if not products:
         return []
     out = ["#1 but cheaper"]
+    if ((res.get("intent") or {}).get("soft") or {}).get("layer_tip"):   # cold trip, light clothes asked for
+        out.insert(0, "Add a warm layer: jackets & sweatshirts")
     prices = sorted(p["price"] for p in products)
     cap = int(round(prices[len(prices) // 2], -2))
     if cap >= 200:
@@ -1390,6 +1393,12 @@ def view_search():
                    "best match first, with a size suggestion on each")
     else:
         showing = "nothing that meets every must-have. Remove a filter, or see the closest options below."
+    sw = intent.get("soft", {})
+    if sw.get("layer_tip") and sw.get("weather"):   # e.g. t-shirts for Manali: give them, but say it's cold
+        w = sw["weather"]
+        when = (sw.get("month") or datetime.date.today().strftime("%B")).title()
+        showing += (f" <b>Heads-up:</b> {html.escape((sw.get('city') or 'it').title())} is {html.escape(w.get('note') or w['climate'])}"
+                    + (f" (about {w['temp_c']}°C)" if w.get("temp_c") is not None else "") + f" in {when}, so you may want a warm layer too.")
     low_conf = intent.get("confidence") == "low"
     if low_conf:
         showing += " <i>I’m not fully sure I understood, so normal search results for your words are further down too.</i>"

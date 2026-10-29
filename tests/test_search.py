@@ -151,18 +151,52 @@ def test_vectorised_search_matches_reference():
         assert (soft == np.array([r and all(c[1] is not False for c in A.check_soft(p, s)) for r, p in zip(ref, A._PL)])).all(), s
 
 
-def test_weather_depends_on_month():
-    # Jaipur is cold in January and hot in May: the weather tool must use the trip's month, not one fixed temperature
-    assert A.weather_tool("jaipur", "jan")["climate"] == "cold" and A.weather_tool("jaipur", "may")["climate"] == "hot"
-    assert A.correct_tokens("I want clothes for my Jaipur trip in January")[1] == []   # everyday words are not "fixed"
-    jan = A.rule_parse("I want clothes for my Jaipur trip in January")
-    assert jan["soft"]["month"] == "january" and jan["soft"]["occasion"] == "casual"   # a trip is casual, not brunch
-    jan, _ = A.enrich(jan)
-    assert {"wool", "fleece"} <= set(jan["soft"]["fabrics"]) and not set(jan["soft"]["fabrics"]) & {"linen", "cotton"}
-    top = [p["type"] for p, _ in A.search(jan, max_results=8)[0]]
+def test_weather_comes_from_the_ai():
+    # weather is the AI's own estimate for the place and month (no lookup table): cold -> warm fabrics and warm layers first,
+    # hot -> breathable; a named product is kept ("t-shirts for Manali") with a warm-layer tip; no place -> no weather
+    assert "don't guess the climate" not in A.SYSTEM and "weather" in A.RESPONSE_SCHEMA["properties"]["soft"]["properties"]
+    assert A.correct_tokens("I want clothes for my Manali trip in January")[1] == []   # everyday words and places are not "fixed"
+    def intent(types, weather, city="manali"):
+        it = A.validate_intent({"query_type": "product_search", "stage": 3, "hard": {"category": "fashion", "types": types},
+                                "soft": {"city": city, "month": "jan", "weather": weather, "fabrics": [], "fabric_named": False}})[0]
+        return A.enrich(it)
+    cold, calls = intent([], {"climate": "COLD", "temp_c": "4", "note": "freezing nights"})
+    assert cold["soft"]["month"] == "january" and cold["soft"]["weather"]["temp_c"] == 4
+    assert {"wool", "fleece"} <= set(cold["soft"]["fabrics"]) and "linen" not in cold["soft"]["fabrics"]
+    assert any("about 4°C" in out for _, _, out in calls)
+    top = [p["type"] for p, _ in A.search(cold, max_results=8)[0]]
     assert top and all(t in ("jacket", "sweater", "sweatshirt", "blazer") for t in top[:4]), top
-    may, _ = A.enrich(A.rule_parse("clothes for my Jaipur trip in May"))
-    assert "linen" in may["soft"]["fabrics"] and not may["soft"].get("prefer_types")
+    tees, _ = intent(["t-shirt"], {"climate": "cold", "temp_c": 8, "note": "cold"})
+    assert tees["soft"].get("layer_tip") and all(p["type"] == "t-shirt" for p, _ in A.search(tees)[0])
+    hot, _ = intent([], {"climate": "hot", "temp_c": 34, "note": "hot and dry"}, city="jaipur")
+    assert "linen" in hot["soft"]["fabrics"] and not hot["soft"].get("prefer_types")
+    none, calls = intent([], {"climate": "snowy"})   # an invalid estimate is dropped, not trusted
+    assert none["soft"]["weather"] is None and none["soft"]["fabrics"] == [] and calls[0][2] == "not estimated"
+
+
+def test_slow_model_falls_back():
+    # a model that doesn't answer in time is skipped for the next model, and tried last on the next search
+    import json as _json, requests as _rq
+    calls = []
+    reply = {"query_type": "product_search", "stage": 1, "interpretation": "Blue kurta", "hard": {"category": "fashion", "types": ["kurta"]},
+             "soft": {"colours": ["blue"]}, "mappings": [], "clarify": None}
+    class R:
+        status_code, text = 200, ""
+        def json(self): return {"candidates": [{"content": {"parts": [{"text": _json.dumps(reply)}]}}]}
+    def fake_post(url, json=None, timeout=None):
+        calls.append(url.split("/models/")[1].split(":")[0])
+        assert timeout == A.TIMEOUT
+        if "slow-model" in url: raise _rq.Timeout("read timed out")
+        return R()
+    real, A.requests.post = A.requests.post, fake_post
+    try:
+        A._LAST_OK[0] = None; A._DOWN_UNTIL.clear()
+        intent, model, log = A.understand("blue kurta", "key", ["slow-model", "fast-model"])
+        assert model == "fast-model" and intent["soft"]["colours"] == ["blue"] and "within" in log[0], log
+        assert A.model_order(["slow-model", "fast-model"]) == ["fast-model", "slow-model"]
+        assert A.CALL_LOG[-2]["status"] == "no response" and A.CALL_LOG[-1]["status"] == 200
+    finally:
+        A.requests.post = real; A._DOWN_UNTIL.clear(); A._LAST_OK[0] = None
 
 
 def test_fast():
