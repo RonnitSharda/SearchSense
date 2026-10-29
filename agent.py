@@ -211,6 +211,39 @@ def _compact_previous(prev):
     return f"[Previous search constraints: {json.dumps(out, ensure_ascii=False)}] " if out else ""
 
 
+# Every Gemini call, newest last, for the admin tab: model, HTTP result, seconds and token counts (thinking included).
+# Kept in memory for this server process, shared by all visitors; it resets when the app restarts.
+CALL_LOG = collections.deque(maxlen=500)
+
+
+def _log_call(purpose, model, t0, r=None, err=None):
+    d = dict(at=time.time(), purpose=purpose, model=model, secs=round(time.time() - t0, 2))
+    if r is None:
+        d.update(status="no response", note=str(err)[:200])
+    else:
+        try:
+            j = r.json()
+        except Exception:
+            j = {}
+        u = j.get("usageMetadata") or {}
+        d.update(status=r.status_code, prompt_tokens=u.get("promptTokenCount"), cached_tokens=u.get("cachedContentTokenCount"),
+                 thinking_tokens=u.get("thoughtsTokenCount"), output_tokens=u.get("candidatesTokenCount"))
+        if r.status_code != 200:
+            d["note"] = str((j.get("error") or {}).get("message") or r.text)[:200]
+    CALL_LOG.append(d)
+
+
+def _post_logged(purpose, model, url, body):
+    t0 = time.time()
+    try:
+        r = requests.post(url, json=body)   # no time limit
+    except Exception as e:
+        _log_call(purpose, model, t0, err=e)
+        raise
+    _log_call(purpose, model, t0, r)
+    return r
+
+
 def call_gemini(api_key, model, query, history=None, previous=None, use_schema=True):
     """One Gemini call with the strict response schema. The model's own thinking stays on (quality over speed);
     if a model rejects the schema, retry once with the prompt alone."""
@@ -228,7 +261,7 @@ def call_gemini(api_key, model, query, history=None, previous=None, use_schema=T
         "contents": [{"role": "user", "parts": [{"text": text}]}],
         "generationConfig": gen,
     }
-    r = requests.post(url, json=body)   # no time limit: quality over speed
+    r = _post_logged("search intent" if use_schema else "search intent (retry without schema)", model, url, body)   # no time limit: quality over speed
     if r.status_code == 400 and use_schema:       # model that rejects the schema: the prompt alone still works
         return call_gemini(api_key, model, query, history, previous, use_schema=False)
     if r.status_code != 200:
@@ -858,7 +891,7 @@ def read_image(image_bytes, mime, api_key, models):
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         try:
-            r = requests.post(url, json=body)   # no time limit
+            r = _post_logged("read photo", model, url, body)
             if r.status_code != 200:
                 raise RuntimeError(f"{r.status_code}: {r.text[:150]}")
             d = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
@@ -926,8 +959,8 @@ def ask_product(p, question, api_key, models):
     for model in models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-            r = requests.post(url, json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                                         "generationConfig": {"temperature": 0.2}})
+            r = _post_logged("product question", model, url, {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                                               "generationConfig": {"temperature": 0.2}})
             if r.status_code == 200:
                 return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip(), model
         except Exception:

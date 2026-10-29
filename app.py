@@ -1,4 +1,4 @@
-import os, re, sys, time, html, json, collections, importlib, zlib, hashlib
+import os, re, sys, time, html, json, collections, importlib, zlib, hashlib, hmac, uuid, datetime
 import streamlit as st
 
 # When new code is deployed, Streamlit unloads changed modules while other sessions may be importing them, which can
@@ -46,10 +46,11 @@ S.setdefault("result", None)
 S.setdefault("pid", None)
 S.setdefault("removed_chips", [])
 S.setdefault("last_results", [])
-TABS = ["🏠 Shop", "📖 Tutorial", "🧪 Test cases", "🧠 AI trace", "📊 Metrics"]
+TABS = ["🏠 Shop", "📖 Tutorial", "🧪 Test cases", "🧠 AI trace", "📊 Metrics", "🔐 Admin"]
 S.setdefault("tab", TABS[0])
 S.setdefault("last_tab", TABS[0])
 S.setdefault("home_n", 24)
+S.setdefault("sid", uuid.uuid4().hex[:6])   # anonymous id, so the admin tab can tell visitors apart
 S.setdefault("metrics", dict(searches=[], adds=[], nudges_shown=0, nudges_accepted=0, orders=0, ordered_items=0, flagged=set()))
 
 # ------------------------------------------------------------------ helpers
@@ -83,6 +84,20 @@ def risky_note(p):
         if any(w in n.lower() for w in ["runs small", "runs slightly large", "sheer", "see-through", "peach", "heavy", "creases", "fragrance", "cool white", "relaxed"]):
             return f'<span class="note">💡 {html.escape(n)}</span>'
     return ""
+
+@st.cache_resource
+def _search_log():
+    """Every search by every visitor since the app started (admin tab)."""
+    return collections.deque(maxlen=500)
+
+
+@st.cache_resource
+def _started():
+    return time.time()
+
+
+_started()
+
 
 @st.cache_resource
 def _intent_cache():
@@ -241,8 +256,10 @@ def run_search(q, followup=False, exact=False):
             kf = S.result["kw_filters"]   # a normal search's filters become the previous constraints
             prev = {"hard": {"gender": kf.get("gender"), "types": [t for t, _ in kf.get("types", [])], "size": kf.get("size")},
                     "soft": {"colours": [c for c, _ in kf.get("colours", [])]}}
+        t_ai = time.time()
         intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS),
                                                json.dumps(prev, ensure_ascii=False, default=str) if prev else "")
+        res.update(t_ai=time.time() - t_ai, model=model, ai_log=log)
         res["steps"].append(("Intent & constraints", f"model: {model}", "; ".join(l for l in log if not l.startswith("validator:"))
                              + ("; previous search's constraints passed as context" if prev else "")))
         if model == "failed":   # safety net: the shopper is never worse off than normal search
@@ -308,6 +325,9 @@ def record_search(res):
                                       stage=res["route"]["stage"] if res["route"]["stage"] != "agent" else res.get("intent", {}).get("stage"),
                                       clarify=bool(res.get("intent", {}).get("stage") == 4 and res.get("intent", {}).get("clarify")),
                                       conf=res.get("intent", {}).get("confidence")))
+    _search_log().append(dict(at=time.time(), sid=S.sid, profile=S.active_profile, q=res["query"], kind=res["kind"],
+                              stage=S.metrics["searches"][-1]["stage"], t=res["t"], t_ai=res.get("t_ai"), n=n, model=res.get("model"),
+                              cached=any(l == "served from cache" for l in res.get("ai_log") or []), fallback=bool(res.get("fallback"))))
     if res["kind"] == "agent" and (res.get("intent", {}).get("soft", {}).get("fabrics")):
         S.metrics["flagged"].update(p["id"] for p, _ in res["items"] if not p["fabric"])   # catalog gap: fabric not stated
 
@@ -727,6 +747,102 @@ def view_metrics():
         st.dataframe([{"Query": x["q"], "Path": x["kind"], "Stage": x["stage"], "Results": x["n"], "Seconds": round(x["t"], 2),
                        "Agent confidence": x["conf"] or ""} for x in reversed(ss)], hide_index=True, use_container_width=True)
 
+
+# ------------------------------------------------------------------ admin (what happens in the background)
+IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+_clock = lambda ts: datetime.datetime.fromtimestamp(ts, IST).strftime("%H:%M:%S")
+
+
+def _admin_login():
+    with st.columns([1, 1.4])[0], st.form("admin_login", border=True):
+        st.markdown("**🔐 Admin sign-in** · see what the app is doing behind the scenes")
+        u = st.text_input("ID")
+        p = st.text_input("Password", type="password")
+        if st.form_submit_button("Sign in", type="primary"):
+            ok_u = hmac.compare_digest(u, str(_secret("ADMIN_USER", "admin")))
+            ok_p = hmac.compare_digest(p, str(_secret("ADMIN_PASSWORD", "admin")))
+            if ok_u and ok_p:
+                S.admin_ok = True; st.rerun()
+            st.error("Wrong ID or password.")
+
+
+def _admin_clear():
+    A.CALL_LOG.clear(); _search_log().clear()
+
+
+def view_admin():
+    if not S.get("admin_ok"):
+        _admin_login(); return
+    calls, searches = list(A.CALL_LOG), list(_search_log())
+    st.markdown('<div class="tc-intro"><b>Admin</b> · live view of the background work for <b>all visitors</b> since the app last '
+                'started (times in IST). Logs are kept in memory and reset when Streamlit restarts.</div>', unsafe_allow_html=True)
+    b1, b2, b3, _ = st.columns([1, 1, 1, 4])
+    b1.button("🔄 Refresh", use_container_width=True)
+    b2.button("🧹 Clear logs", use_container_width=True, on_click=_admin_clear)
+    if b3.button("Sign out", use_container_width=True):
+        S.admin_ok = False; st.rerun()
+
+    up = time.time() - _started()
+    recent = {x["sid"] for x in searches if time.time() - x["at"] < 1800}
+    ok = sum(1 for c in calls if c["status"] == 200)
+    m = st.columns(5)
+    m[0].metric("AI key", "Set" if API_KEY else "Not set")
+    m[1].metric("Up for", f"{int(up // 3600)}h {int(up % 3600 // 60)}m")
+    m[2].metric("Searches", len(searches))
+    m[3].metric("Active visitors (30 min)", len(recent))
+    m[4].metric("Gemini calls ok / failed", f"{ok} / {len(calls) - ok}")
+
+    st.markdown('<div class="layer">Models · tried in this order for every AI search</div>', unsafe_allow_html=True)
+    rows = []
+    for i, mdl in enumerate(MODELS):
+        mc = [c for c in calls if c["model"] == mdl]
+        good = [c for c in mc if c["status"] == 200]
+        bad = [c for c in mc if c["status"] != 200]
+        secs = sorted(c["secs"] for c in good)
+        think = [c["thinking_tokens"] for c in good if c.get("thinking_tokens")]
+        rows.append({"#": i + 1, "Model": mdl, "Calls": len(mc), "OK": len(good), "Failed": len(bad),
+                     "Quota refusals (429)": sum(1 for c in bad if c["status"] == 429),
+                     "Median time (s)": secs[len(secs) // 2] if secs else None,
+                     "Avg thinking tokens": round(sum(think) / len(think)) if think else None,
+                     "Last error": (f"{_clock(bad[-1]['at'])} · {bad[-1]['status']}: {bad[-1].get('note', '')}" if bad else "")})
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+    q429 = [r["Model"] for r in rows if r["Quota refusals (429)"]]
+    if q429:
+        st.warning(f"Quota limit hit on {', '.join(q429)}: Google refused these calls (429), so each AI search waited for the refusal "
+                   "and then tried the next model. On the free tier, check the daily (RPD) and per-minute (RPM) limits in Google AI Studio.")
+
+    st.markdown('<div class="layer">Gemini calls · newest first</div>', unsafe_allow_html=True)
+    if calls:
+        st.dataframe([{"Time": _clock(c["at"]), "Purpose": c["purpose"], "Model": c["model"],
+                       "Result": "OK" if c["status"] == 200 else f"✕ {c['status']}", "Seconds": c["secs"],
+                       "Prompt tokens": c.get("prompt_tokens"), "Cached tokens": c.get("cached_tokens"),
+                       "Thinking tokens": c.get("thinking_tokens"), "Output tokens": c.get("output_tokens"),
+                       "Error": c.get("note", "")} for c in reversed(calls)], hide_index=True, use_container_width=True)
+        st.caption("Seconds is Google's response time. Thinking tokens are the model's hidden reasoning: more thinking, slower answer.")
+    else:
+        st.info("No Gemini calls yet. " + ("Run an AI search (a full sentence) and refresh." if API_KEY else
+                                         "There is no GEMINI_API_KEY, so the app is using offline rules."))
+
+    st.markdown('<div class="layer">Searches · all visitors, newest first</div>', unsafe_allow_html=True)
+    if searches:
+        st.dataframe([{"Time": _clock(x["at"]), "Visitor": x["sid"], "Profile": x["profile"], "Query": x["q"],
+                       "Path": {"agent": "AI", "keyword": "normal", "help": "customer care"}.get(x["kind"], x["kind"])
+                               + (" (safety net)" if x["fallback"] else "") + (" · cached" if x["cached"] else ""),
+                       "Stage": x["stage"], "Results": x["n"], "Total (s)": round(x["t"], 2),
+                       "AI wait (s)": round(x["t_ai"], 2) if x["t_ai"] is not None else None,
+                       "App work (s)": round(x["t"] - (x["t_ai"] or 0), 2), "Model": x["model"] or ""}
+                      for x in reversed(searches)], hide_index=True, use_container_width=True)
+        st.caption("AI wait = time spent waiting for Gemini (all models tried). App work = everything else: routing, searching "
+                   "5,000+ products, size checks.")
+    else:
+        st.info("No searches yet.")
+
+    with st.expander("Configuration"):
+        st.markdown(f"- **Catalog:** {html.escape(CATALOG_SOURCE)} · {len(PRODUCTS):,} products\n"
+                    f"- **Models (GEMINI_MODELS):** {', '.join(MODELS)}\n"
+                    f"- **Thinking:** the model's default (no cap) · **Time limit per AI call:** none\n"
+                    f"- **AI answers cached:** {len(_intent_cache())} (identical searches skip Gemini)\n"
+                    f"- **This visitor:** {S.sid} · Streamlit {st.__version__} · Python {sys.version.split()[0]}")
 
 # ------------------------------------------------------------------ trace
 def render_trace(res):
@@ -1333,5 +1449,7 @@ elif S.tab == TABS[3]:
     view_trace()
 elif S.tab == TABS[4]:
     view_metrics()
+elif S.tab == TABS[5]:
+    view_admin()
 else:
     {"search": view_search, "product": view_product, "cart": view_cart}[S.view]()
