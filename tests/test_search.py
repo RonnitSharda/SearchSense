@@ -143,7 +143,7 @@ def test_vectorised_search_matches_reference():
                  colours=random.sample(["lilac", "navy blue", "white", "pink", "mustard"], random.choice([0, 0, 1])),
                  fabric_named=random.choice([True, False]),
                  colour_family=random.sample(["pastel", "dark", "neutral"], random.choice([0, 1])), fabrics=random.sample(fabs, random.choice([0, 2])),
-                 pairs=random.choice([None, "silver"]), needs=[])
+                 pairs=random.choice([None, "silver"]), fit=random.choice([None, None, "relaxed", "slim"]), needs=[])
         ref = np.array([A._hard_ok(p, h)[0] for p in A._PL])
         assert (A._hard_mask(h) == ref).all(), h
         soft = A._all(A._soft_masks(s), A._hard_mask(h))
@@ -214,6 +214,19 @@ def test_refine_keeps_the_previous_search():
     it, kept = A.merge_followup(sarees, dict(prev, hard=dict(prev["hard"], budget_max=3000)))
     assert it["hard"]["budget_max"] == 3000 and it["hard"]["gender"] == "women" and it["soft"].get("occasion") == "wedding"
     assert not it["soft"].get("fabrics") and it["hard"].get("style") is None
+
+
+def test_loose_becomes_a_fit_filter():
+    # "bottoms for Snigdha" then "loose": the AI says fit relaxed; it is a filter (chip), checked per product, and kept on refine
+    prev = {"hard": {"category": "fashion", "gender": "women", "types": ["jeans", "palazzo", "trousers"], "style": "western"}, "soft": {}}
+    it, kept = A.merge_followup(A.validate_intent({"hard": {}, "soft": {"fit": "loose"}})[0], prev)
+    assert it["soft"]["fit"] == "relaxed" and it["hard"]["types"] == ["jeans", "palazzo", "trousers"] and "types" in kept
+    it, _ = A.enrich(it)
+    items = A.search(it, max_results=8)[0]
+    fits = [p["fit"] for p, _ in items]
+    assert items and fits[0] == "relaxed" and "slim" not in fits, fits   # stated relaxed first, never a stated slim fit
+    assert all(any(n == "relaxed fit" for n, _, _ in checks) for _, checks in items)
+    assert A.rule_parse("loose jeans for office")["soft"]["fit"] == "relaxed"
 
 
 def test_fast():

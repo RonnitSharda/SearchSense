@@ -8,7 +8,7 @@
   fit signals are SIMULATED (no ratings, MRP or fit reviews exist in the source data).
 If the data file is missing the app falls back to the 25 demo products only.
 """
-import csv, gzip, os
+import csv, gzip, os, re
 
 BREATHABLE = {"cotton", "linen", "chanderi", "mul cotton", "khadi", "cotton-silk", "rayon"}
 HEAVY = {"velvet", "silk", "brocade", "georgette", "denim", "polyester"}
@@ -158,6 +158,15 @@ if os.path.exists(DATA_FILE):
         CATALOG_SOURCE = f"{len(P)} demo + {len(_rows):,} Myntra listings"
     except Exception as e:  # corrupt / partial file: never break the app
         CATALOG_SOURCE = f"demo only (could not read Myntra data: {str(e)[:60]})"
+
+# Fit stated in the listing title (relaxed / regular / slim), or "" when the listing doesn't say. Palazzos, shararas and
+# similar cuts are relaxed by design.
+_FIT_RULES = [("relaxed", r"\b(relaxed|loose|oversized|baggy|wide[- ]leg|flared|boyfriend|mom fit|boxy|palazzos?)\b"),
+              ("slim", r"\b(slim|skinny|bodycon|fitted|tapered|muscle fit)\b"),
+              ("regular", r"\b(regular fit|straight fit|straight|classic fit)\b")]
+for _p in PRODUCTS.values():
+    _n = _p["name"].lower()
+    _p["fit"] = "relaxed" if _p["type"] in ("palazzo", "sharara set") else next((f for f, rx in _FIT_RULES if re.search(rx, _n)), "")
 
 # Size anchors from other brands (illustrative brand-to-platform offsets)
 # How a brand's labels compare with ours (illustrative): our size = the brand's size + offset.

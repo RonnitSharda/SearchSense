@@ -174,6 +174,7 @@ def chips_from(intent):
     if s.get("colours"): out.append(("Colour: " + " / ".join(s["colours"]).title(), "soft", "colours"))
     if s.get("colour_family"): out.append(("Colours: " + " / ".join(s["colour_family"]).title(), "soft", "colour_family"))
     if s.get("fabrics"): out.append(("Fabric: " + ", ".join(sorted(s["fabrics"])[:4]) + ("…" if len(s["fabrics"]) > 4 else ""), "soft", "fabrics"))
+    if s.get("fit"): out.append((f"Fit: {s['fit'].title()}", "soft", "fit"))
     if s.get("occasion"): out.append((f"Occasion: {s['occasion'].title()}", "soft", "occasion"))
     if s.get("time") and s["time"] != "any": out.append(("Time: " + ("Daytime" if s["time"] == "day" else "Evening"), "soft", "time"))
     if s.get("pairs") and s["pairs"] != "any": out.append((f"Pairs with: {s['pairs'].title()}", "soft", "pairs"))

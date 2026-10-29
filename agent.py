@@ -170,6 +170,7 @@ ALLOWED = dict(
     fabrics=sorted({p["fabric"] for p in PRODUCTS.values() if p["fabric"]}),
     types=sorted({p["type"] for p in PRODUCTS.values()}),
     pairs=["silver", "gold", "any"],
+    fit=["relaxed", "regular", "slim"],
     needs=list(NEEDS),
 )
 TYPES_BY_CATEGORY = {c: sorted({p["type"] for p in PRODUCTS.values() if p["category"] == c}) for c in ALLOWED["category"]}
@@ -206,7 +207,7 @@ RESPONSE_SCHEMA = build_response_schema(ALLOWED)
 
 
 _HARD_KEEP = ("category", "gender", "budget_min", "budget_max", "size", "types", "style")
-_SOFT_KEEP = ("occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "pairs", "needs")
+_SOFT_KEEP = ("occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fit", "pairs", "needs")
 
 
 def merge_followup(intent, prev):
@@ -384,7 +385,7 @@ def rule_parse(query, history=None):
     newq = strip(correct_tokens(query)[0].lower())
     q = (strip(history[-1].lower()) + " " + newq) if history else newq   # a follow-up refines the previous search only
     hard = dict(category=None, gender=None, budget_min=None, budget_max=None, size=None, types=[], style=None)
-    soft = dict(occasion=None, time=None, city=None, month=None, colour_family=[], colours=[], fabrics=[], fabric_named=False,
+    soft = dict(occasion=None, time=None, city=None, month=None, fit=None, colour_family=[], colours=[], fabrics=[], fabric_named=False,
                 pairs=None, needs=[])
     maps = []
     hard["budget_min"], hard["budget_max"] = _budget(newq if re.search(r"\d", newq) else q)
@@ -411,6 +412,9 @@ def rule_parse(query, history=None):
                 maps.append(dict(phrase=word, maps_to=f"occasion {occ}" + (f", {tm}" if tm else "")))
     if "daytime" in q or "day " in q or "morning" in q: soft["time"] = "day"
     if "evening" in q or "night" in q: soft["time"] = "evening"
+    soft["fit"] = next((f for f, rx in (("relaxed", r"\b(loose|relaxed|baggy|oversized|wide[- ]leg|comfy fit)\b"),
+                                         ("slim", r"\b(slim|skinny|fitted|tight)\b"), ("regular", r"\b(regular fit|straight)\b"))
+                        if re.search(rx, newq)), None)
     soft["city"] = next((c for c in sorted(_PLACES) if re.search(rf"\b{c}\b", q)), None)   # no weather offline: that needs the AI
     soft["month"] = next((m for m in MONTHS if re.search(rf"\b{m[:3]}(?:{m[3:]})?\b", q)), None)
     for cf in ALLOWED["colour_family"]:
@@ -452,7 +456,9 @@ VALUE_ALIASES = {"male": "men", "man": "men", "gents": "men", "mens": "men", "fe
                  "dry-fit": "quick-dry", "quick dry": "quick-dry", "rapid-dry": "quick-dry", "moisture-wicking": "quick-dry",
                  "shaadi": "wedding", "sangeet": "wedding", "reception": "wedding", "mehendi": "haldi", "mehndi": "haldi",
                  "diwali": "festive", "festival": "festive", "work": "office", "formal": "office", "night": "evening",
-                 "daytime": "day", "morning": "day", "afternoon": "day", "home decor": "home decor"}
+                 "daytime": "day", "morning": "day", "afternoon": "day", "home decor": "home decor",
+                 "loose": "relaxed", "baggy": "relaxed", "oversized": "relaxed", "wide": "relaxed", "wide leg": "relaxed",
+                 "comfort": "relaxed", "skinny": "slim", "fitted": "slim", "tight": "slim", "straight": "regular", "classic": "regular"}
 
 
 def _closest(value, allowed, cutoff=0.82):
@@ -535,6 +541,9 @@ def validate_intent(intent):
         h["size"] = None
 
     one(s, "occasion", ALLOWED["occasion"]); one(s, "time", ALLOWED["time"])
+    s["fit"] = VALUE_ALIASES.get(str(s.get("fit") or "").lower().strip(), str(s.get("fit") or "").lower().strip()) or None
+    if s["fit"] not in ALLOWED["fit"] + [None]:
+        notes.append(f"fit: “{s['fit']}” → dropped"); s["fit"] = None
     if s.get("pairs") not in ("silver", "gold"): s["pairs"] = None
     many(s, "colour_family", ALLOWED["colour_family"])
     many(s, "fabrics", ALLOWED["fabrics"])
@@ -703,6 +712,8 @@ def check_soft(p, s):
         checks.append(("colour " + "/".join(s["colours"]), _colour_ok(p, s["colours"]), p["colour"]))
     if s.get("colour_family"):
         checks.append(("colour", p["colour_family"] in s["colour_family"], p["colour"]))
+    if s.get("fit"):   # None = the listing doesn't say its fit (allowed, ranked lower)
+        checks.append((f"{s['fit']} fit", (p["fit"] == s["fit"]) if p.get("fit") else None, p.get("fit") or "not stated"))
     if s.get("occasion") and s["occasion"] not in ("home", "daily"):
         checks.append(("occasion", s["occasion"] in p["occasions"], "/".join(p["occasions"][:2])))
     if s.get("time") and s["time"] != "any":
@@ -736,6 +747,7 @@ _CFAM, _CFAM_M = _coded("colour_family")
 _TIME, _TIME_M = _coded("time")
 _PAIR, _PAIR_M = _coded("pairs")
 _BRAND, _BRAND_M = _coded("brand")
+_FIT, _FIT_M = _coded("fit")
 _PRICE = np.array([p["price"] for p in _PL], dtype=np.int64)
 # rated products rank above unrated ones (the Myntra data has no ratings); the jitter is a stable tie-break
 _RATING = np.array([(p.get("rating") or 0) / 10 for p in _PL])
@@ -788,6 +800,7 @@ def _soft_masks(s):
             _COLOUR_M[key] = np.array([any(t in c for t in targets) for c in _COLOUR_STR])
         out.append(_COLOUR_M[key])
     if s.get("colour_family"): out.append(_isin(_CFAM, _CFAM_M, s["colour_family"]))
+    if s.get("fit"): out.append(_isin(_FIT, _FIT_M, [s["fit"], ""]))
     if s.get("occasion") and s["occasion"] not in ("home", "daily"): out.append(_OCC_M.get(s["occasion"], _ZERO))
     if s.get("time") and s["time"] != "any": out.append(_isin(_TIME, _TIME_M, [s["time"], "any"]))
     if s.get("pairs") and s["pairs"] != "any": out.append(_isin(_PAIR, _PAIR_M, [s["pairs"], "any"]))
@@ -818,7 +831,7 @@ def _top(idx, score, k, per_brand):
 
 
 # weakest first (solution doc: colour shade, fabric, pairing, style words); occasion type is near-hard, so it goes last
-RELAX_ORDER = ["colours", "colour_family", "fabrics", "pairs", "time", "occasion"]
+RELAX_ORDER = ["colours", "colour_family", "fabrics", "fit", "pairs", "time", "occasion"]
 
 
 def search(intent, min_results=2, max_results=6):
@@ -851,6 +864,8 @@ def search(intent, min_results=2, max_results=6):
         trace.append(f"Verifier: too few matches, relaxed '{pick}' and searched again")
     # listings that only pass because their fabric is unknown rank below ones that state a matching fabric
     unknown = (_FAB == _FAB_M.get("", -1)) * 0.3 if s.get("fabrics") and not s.get("fabric_named") else 0
+    if s.get("fit"):   # listings that say "relaxed fit" rank above ones that don't say
+        unknown = unknown + (_FIT == _FIT_M.get("", -1)) * 0.3
     score = _RATING + prefer * 0.5 + prefer_t * 1.0 + _JITTER - unknown
     if relaxed:
         n_exact = int(exact.sum())
@@ -1162,6 +1177,8 @@ def why_this(p, intent):
         bits.append(f"in {p['colour']}")
     if s.get("colour_family") and p["colour_family"] in s["colour_family"]:
         bits.append(f"{p['colour']} suits {s.get('time') or 'the'} {s.get('occasion') or 'look'}".replace("the look", "the look"))
+    if s.get("fit") and p.get("fit") == s["fit"]:
+        bits.append(f"{s['fit']} fit")
     if s.get("pairs") == "silver" and p["pairs"] in ("silver", "any"):
         bits.append("works with silver")
     h = intent.get("hard", {})

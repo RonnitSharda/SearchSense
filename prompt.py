@@ -42,6 +42,9 @@ VOCAB_RULES = [
      "performance fabrics sold by technology name (dri-fit, rapid-dry). Track pants / joggers -> type trousers"),
     ("breathable, summer, hot, humid, sweaty, light fabric", "fabrics cotton, linen, chanderi, mul cotton, khadi, cotton-silk, rayon (inferred)"),
     ("winter, cold, cosy (clothes), warm (clothes)", "fabrics wool, fleece, velvet (inferred)"),
+    ("loose, relaxed, baggy, oversized, wide-leg, comfy, not tight", "fit relaxed"),
+    ("slim, skinny, fitted, tight, bodycon", "fit slim"),
+    ("regular fit, straight fit, classic fit", "fit regular"),
     ("pastel, soft colours, light colours", "colour_family pastel"),
     ("bright, vibrant, colourful", "colour_family bright"),
     ("dark, deep, rich colours", "colour_family dark"),
@@ -170,6 +173,8 @@ EXAMPLES = [
 
 def _with_type(a):
     """Examples default to a product search; query_type and reply are listed first, as the model should decide them first."""
+    if "soft" in a and "fit" not in a["soft"]:   # every example spells out fit, after fabric_named
+        a = dict(a, soft={k2: v2 for k, v in a["soft"].items() for k2, v2 in ([(k, v), ("fit", None)] if k == "fabric_named" else [(k, v)])})
     if "soft" in a and "month" not in a["soft"]:   # every example spells out month and weather, right after city
         a = dict(a, soft={k2: v2 for k, v in a["soft"].items() for k2, v2 in ([(k, v), ("month", None), ("weather", None)] if k == "city" else [(k, v)])})
     return {"query_type": a.get("query_type", "product_search"), "reply": a.get("reply"), "confidence": a.get("confidence", "high"),
@@ -273,6 +278,8 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
   - fabrics: fabrics / materials from the list above.
   - fabric_named: true if the shopper literally named the fabric ("linen shirt"), false if you inferred fabrics from words like
     "breathable" or "winter". Named fabrics are strict; inferred ones also allow listings with no stated fabric.
+  - fit: {allowed['fit']} when the shopper describes the cut ("loose jeans", "something less tight" -> relaxed;
+    "skinny jeans" -> slim), else null. A fit word in a follow-up ("loose") changes only the fit.
   - pairs: "silver" or "gold" when the shopper mentions jewellery or metal tones, else null.
   - needs: only from this list (for beauty and home items):
 {needs}
@@ -360,9 +367,10 @@ def build_response_schema(allowed):
                 "colours": arr(_str()),
                 "fabrics": arr(_str(allowed["fabrics"])),
                 "fabric_named": {"type": "BOOLEAN"},
+                "fit": _str(allowed["fit"], nullable=True),
                 "pairs": _str(["silver", "gold"], nullable=True),
                 "needs": arr(_str(list(NEEDS)))},
-                "required": ["occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fabric_named", "pairs", "needs"]},
+                "required": ["occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "fabric_named", "fit", "pairs", "needs"]},
             "mappings": arr({"type": "OBJECT", "properties": {"phrase": _str(), "maps_to": _str()}, "required": ["phrase", "maps_to"]}),
             "clarify": {"type": "OBJECT", "nullable": True, "properties": {"question": _str(), "options": arr(_str())},
                         "required": ["question", "options"]},
