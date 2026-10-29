@@ -330,6 +330,7 @@ flowchart TD
 - Out-of-catalog alternatives; support hand-off
 - Reasoning bubble and agent steps
 - Fast path for simple queries
+- **Stop search** while the AI is answering: earlier results kept; logged in the client console
 
 **Profiles and fit:**
 - Several profiles per account

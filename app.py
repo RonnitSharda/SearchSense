@@ -1,4 +1,4 @@
-import os, re, sys, time, html, json, copy, collections, importlib, zlib, hashlib, hmac, uuid, datetime
+import os, re, sys, time, html, json, copy, collections, importlib, zlib, hashlib, hmac, uuid, datetime, threading
 import streamlit as st
 
 # When new code is deployed, Streamlit unloads changed modules while other sessions may be importing them, which can
@@ -61,7 +61,7 @@ S.setdefault("tab", TABS[0])
 S.setdefault("last_tab", TABS[0])
 S.setdefault("home_n", 24)
 S.setdefault("sid", uuid.uuid4().hex[:6])   # anonymous id, so the admin tab can tell visitors apart
-S.setdefault("metrics", dict(searches=[], adds=[], nudges_shown=0, nudges_accepted=0, orders=0, ordered_items=0, flagged=set()))
+S.setdefault("metrics", dict(searches=[], adds=[], nudges_shown=0, nudges_accepted=0, orders=0, ordered_items=0, flagged=set(), stopped=0))
 
 # ------------------------------------------------------------------ helpers
 STAGE_PILL = {0: ("0 · Pass-through", "p-grey"), 1: ("1 · Clear intent", "p-navy"), 2: ("2 · Minor correction", "p-navy"),
@@ -155,12 +155,57 @@ def cached_understand(query, history, _key, models, previous=""):
     if key in cache and A.provider(cache[key][1]) == A.PRIMARY:   # an answer from the other provider is asked again
         intent, model, log = copy.deepcopy(cache[key])
         return intent, model, log + ["served from cache"]
-    with st.spinner("✦ AI mode is reading your request…"):
-        out = A.understand(query, _key, list(models), list(history), json.loads(previous) if previous else None)
-    if out[1] != "failed":
-        if len(cache) > 2000: cache.clear()
-        cache[key] = copy.deepcopy(out)
-    return out
+    # the AI call runs in the background so the shopper can press Stop while waiting; pressing it reruns the page
+    # (Streamlit interrupts this run) and the answer, if it still arrives, is cached for next time
+    tag, box, t0 = getattr(A._CTX, "tag", None), {}, time.time()
+
+    def work():
+        A.set_log_tag(tag)
+        try:
+            box["out"] = out = A.understand(query, _key, list(models), list(history), json.loads(previous) if previous else None)
+            if out[1] != "failed":
+                if len(cache) > 2000: cache.clear()
+                cache[key] = copy.deepcopy(out)
+        except Exception as e:
+            box["err"] = e
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    holder = st.empty()
+    with holder.container():
+        c1, c2 = st.columns([5, 1.1], vertical_alignment="center")
+        msg = c1.empty()
+        c2.button("■ Stop search", key=f"stop_{tag}", use_container_width=True, on_click=_stop_search, args=(query, tag, t0),
+                  help="Stop waiting for the AI and go back to your results")
+    while th.is_alive():
+        msg.markdown(f'<div class="ask">✦ AI mode is reading your request… {time.time() - t0:.0f}s</div>', unsafe_allow_html=True)
+        th.join(0.3)
+    holder.empty()
+    if "err" in box:
+        raise box["err"]
+    return box["out"]
+
+
+@st.cache_resource
+def _stopped_tags():
+    """Searches the shopper stopped (admin tab marks their AI calls)."""
+    return set()
+
+
+def _stop_search(query, tag, t0):
+    """The shopper stopped a search while the AI was still answering: keep the earlier results, log the stopped search."""
+    waited = time.time() - t0
+    S.stopped_notice = query
+    S.metrics["stopped"] = S.metrics.get("stopped", 0) + 1
+    _stopped_tags().add(tag)
+    _search_log().append(dict(
+        at=time.time(), sid=S.sid, tag=tag, profile=S.profile.get("name"), q=query, kind="stopped", stage=None, t=waited, t_ai=waited,
+        n=0, model=None, cached=False, fallback=False, stopped=True,
+        route=dict(label="Stopped by the shopper", reason=f"Stopped after {waited:.1f}s waiting for the AI", query=query, fixes=[]),
+        steps=[("Stopped", "stop_search()", f"the shopper pressed Stop after {waited:.1f}s; earlier results kept; "
+                                            "the AI's answer is cached if it still arrives")],
+        ai_log=[], intent={}, relaxed=[], results=[]))
+    A.set_log_tag(None)
 
 
 TOP_CHART = {"XS": {"Chest (in)": 32, "Waist (in)": 26, "Shoulder (in)": 13.5}, "S": {"Chest (in)": 34, "Waist (in)": 28, "Shoulder (in)": 14},
@@ -715,6 +760,8 @@ with st.form("search", clear_on_submit=False, border=False):
 if go and q.strip():
     run_search(q.strip())
     go_tab(TABS[0])
+if S.get("stopped_notice"):
+    st.info(f"⏹ Search stopped: “{S.pop('stopped_notice')}”. Your earlier results are below; edit the search and try again any time.")
 
 n1, n2, n3, n4 = st.columns([7.2, 0.85, 0.95, 0.8], vertical_alignment="center")
 with n1:
@@ -1103,6 +1150,8 @@ def view_metrics():
         ("AI-mode queries that needed a clarifying question", "Guardrail", "Kept low", f"{len(clar)} of {len(ai)} ({pct(len(clar), len(ai))})"),
         ("Accepted size recommendation rate", "Supporting", "Up", f"{len(accepted)} of {len(rec_adds)} adds kept our size ({pct(len(accepted), len(rec_adds))})"),
         ("Search latency, pass-through queries", "Guardrail", "No change vs today", f"median {ms([x['t'] for x in kw])} (AI mode: {ms([x['t'] for x in ai])})"),
+        ("AI searches stopped by the shopper while waiting", "Guardrail", "Kept low",
+         f"{m.get('stopped', 0)} of {len(ai) + m.get('stopped', 0)} ({pct(m.get('stopped', 0), len(ai) + m.get('stopped', 0))})"),
     ]
     st.dataframe([{"KPI": a, "Type": b, "Target": c, "This session": d} for a, b, c, d in rows], hide_index=True, use_container_width=True)
     c1, c2, c3, c4 = st.columns(4)
@@ -1162,7 +1211,7 @@ def _show_call(c, n=None):
 @st.dialog("Full log of this search", width="large")
 def _search_detail(x):
     st.markdown(f"### “{html.escape(x['q'])}”")
-    path = {"agent": "AI", "keyword": "normal search", "help": "customer care"}.get(x["kind"], x["kind"])
+    path = {"agent": "AI", "keyword": "normal search", "help": "customer care", "stopped": "stopped by the shopper"}.get(x["kind"], x["kind"])
     st.caption(f"{_clock(x['at'])} IST · visitor {x['sid']} · profile {x['profile']} · path {path}"
                + (" (safety net)" if x["fallback"] else "") + f" · stage {x['stage']} · {x['n']} results")
     c = st.columns(3)
@@ -1439,16 +1488,18 @@ def view_admin():
         st.warning(f"Quota limit hit on {', '.join(q429)}: Google refused these calls (429), so each AI search waited for the refusal "
                    "and then tried the next model. On the free tier, check the daily (RPD) and per-minute (RPM) limits in Google AI Studio.")
 
-    st.markdown('<div class="layer">Gemini calls · newest first</div>', unsafe_allow_html=True)
+    st.markdown('<div class="layer">AI calls (Gemini and Cohere) · newest first</div>', unsafe_allow_html=True)
     if calls:
         ev = st.dataframe([{"Time": _clock(c["at"]), "Purpose": c["purpose"], "Model": c["model"],
-                       "Result": "OK" if c["status"] == 200 else f"✕ {c['status']}", "Seconds": c["secs"],
+                       "Result": ("OK" if c["status"] == 200 else f"✕ {c['status']}") + (" · search stopped" if c.get("tag") in _stopped_tags() else ""),
+                       "Seconds": c["secs"],
                        "Prompt tokens": c.get("prompt_tokens"), "Cached tokens": c.get("cached_tokens"),
                        "Thinking tokens": c.get("thinking_tokens"), "Output tokens": c.get("output_tokens"),
                        "Error": c.get("note", "")} for c in reversed(calls)], hide_index=True, use_container_width=True,
                           on_select="rerun", selection_mode="single-row", key="adm_calls")
-        st.caption("Seconds is Google's response time. Thinking tokens are the model's hidden reasoning: more thinking, slower answer. "
-                   "Tick a row, then open it to see exactly what was sent and what Gemini replied.")
+        st.caption("Seconds is the AI provider's response time. Thinking tokens are the model's hidden reasoning: more thinking, slower answer. "
+                   "“search stopped” = the shopper pressed Stop before this answer arrived (it was still cached for next time). "
+                   "Tick a row, then open it to see exactly what was sent and what the AI replied.")
         pick = ev.selection.rows
         if st.button("🔍 View this call (sent + reply)", disabled=not pick, key="adm_call_btn"):
             _call_detail(list(reversed(calls))[pick[0]])
@@ -1459,14 +1510,15 @@ def view_admin():
     st.markdown('<div class="layer">Searches · all visitors, newest first</div>', unsafe_allow_html=True)
     if searches:
         ev = st.dataframe([{"Time": _clock(x["at"]), "Visitor": x["sid"], "Profile": x["profile"], "Query": x["q"],
-                       "Path": {"agent": "AI", "keyword": "normal", "help": "customer care"}.get(x["kind"], x["kind"])
+                       "Path": {"agent": "AI", "keyword": "normal", "help": "customer care", "stopped": "⏹ stopped by shopper"}.get(x["kind"], x["kind"])
                                + (" (safety net)" if x["fallback"] else "") + (" · cached" if x["cached"] else ""),
                        "Stage": x["stage"], "Results": x["n"], "Total (s)": round(x["t"], 2),
                        "AI wait (s)": round(x["t_ai"], 2) if x["t_ai"] is not None else None,
                        "App work (s)": round(x["t"] - (x["t_ai"] or 0), 2), "Model": x["model"] or ""}
                       for x in reversed(searches)], hide_index=True, use_container_width=True,
                           on_select="rerun", selection_mode="single-row", key="adm_searches")
-        st.caption("AI wait = time spent waiting for Gemini (all models tried). App work = everything else: routing, searching "
+        st.caption("AI wait = time spent waiting for the AI (all models tried). “■ stopped by shopper” = Stop was pressed after that wait. "
+                   "App work = everything else: routing, searching "
                    "5,000+ products, size checks. Tick a row, then open its full log.")
         pick = ev.selection.rows
         if st.button("🔍 View full log of this search", type="primary", disabled=not pick, key="adm_search_btn"):
