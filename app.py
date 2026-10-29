@@ -603,6 +603,11 @@ with st.sidebar:
               anchor_size=pr.get("anchor_size") if ab not in (None, "None / not sure") else None,
               gender=None if gd == "Any" else gd.lower())
 
+    rets = [(PRODUCTS[o["pid"]]["type"], o["size"], o["outcome"]) for o in pr.get("orders", []) if o["outcome"].startswith("returned")]
+    if rets:   # returns override the usual size for that kind of product; say so before the shopper wonders why
+        st.caption("Your returns count too: " + "; ".join(
+            f"{t} in {sz} came back {'too small' if 'small' in out or 'tight' in out else 'too loose'}, so {t if t.endswith('s') else t + 's'} "
+            + ("start one size up" if "small" in out or "tight" in out else "stay one size down") for t, sz, out in rets) + ".")
     with st.expander("📏 Size chart"):
         size_chart()
 

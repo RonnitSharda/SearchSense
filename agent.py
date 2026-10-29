@@ -1202,7 +1202,7 @@ def _scale(p):
     return WAIST_ORDER if p["sizes"][0].isdigit() else SIZE_ORDER
 
 
-def _return_bounds(scale, profile):
+def _return_bounds(scale, profile, ptype=None):
     """The shopper's own returns on this size scale: 'returned · too small' in 30 means 32 or up; 'too loose' in 34 means 32 or down.
     Returns (floor_idx, ceil_idx, note) or (None, None, None)."""
     floor, ceil, notes = None, None, []
@@ -1210,11 +1210,15 @@ def _return_bounds(scale, profile):
         out, size = o.get("outcome", ""), str(o.get("size", ""))
         if not out.startswith("returned") or size not in scale:
             continue
+        otype = PRODUCTS[o["pid"]]["type"] if o.get("pid") in PRODUCTS else None
+        if ptype and otype and not _type_match([otype], ptype) and not _type_match([ptype], otype):
+            continue   # a kurta returned in S says nothing about t-shirts
+        what = f"a {otype} in {size}" if otype else f"a {size}"
         i = scale.index(size)
         if "small" in out or "tight" in out:
-            floor = max(floor if floor is not None else -1, i + 1); notes.append(f"you returned a {size} for being too small")
+            floor = max(floor if floor is not None else -1, i + 1); notes.append(f"you returned {what} for being too small")
         elif any(w in out for w in ("loose", "big", "large")):
-            ceil = min(ceil if ceil is not None else len(scale), i - 1); notes.append(f"you returned a {size} for being too loose")
+            ceil = min(ceil if ceil is not None else len(scale), i - 1); notes.append(f"you returned {what} for being too loose")
     return floor, ceil, "; ".join(notes) or None
 
 
@@ -1231,7 +1235,7 @@ def fit_agent(p, profile):
     if p["sizes"][0].isdigit():
         base = profile.get("waist") or None
         source = f"your waist {base}"
-    floor, ceil, ret_note = _return_bounds(scale, profile)
+    floor, ceil, ret_note = _return_bounds(scale, profile, p["type"])
     from_returns = False
     if (not base or base not in scale) and ret_note:   # no size given, but their returns say where they are
         j = floor if floor is not None else ceil
@@ -1268,10 +1272,15 @@ def fit_agent(p, profile):
         reason += f"; {p['fit_reviews']} reviews mention fit: {signal}"
         if adj and not clamped: reason += f", so size {'up' if adj > 0 else 'down'} to {rec}"
         if ret_note and clamped: reason += f"; {ret_note}, so {rec}"
+    if clamped and conf == "high":   # your returns override the size you gave us: say so, don't sound certain
+        conf = "medium"
+    note = signal
+    if ret_note and clamped and not from_returns:   # shown on the card badge: "M recommended · you returned a kurta in S"
+        note = ret_note.split("; ")[0].replace(" for being too small", "").replace(" for being too loose", "")
     ask = "Which brand fits you best, and in what size?" if conf == "low" or from_returns else None
     if rec not in p["sizes"]:
         return dict(size=None, confidence="low", reason=f"Your likely size {rec} is not stocked", ask=None)
-    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")), note=signal, base=base,
+    return dict(size=rec, confidence=conf, reason=reason, ask=ask, simulated=bool(p.get("fit_sim")), note=note, base=base,
                 from_returns=bool(ret_note and (from_returns or clamped)))
 
 
