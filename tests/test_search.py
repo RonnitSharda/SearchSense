@@ -192,11 +192,28 @@ def test_slow_model_falls_back():
     try:
         A._LAST_OK[0] = None; A._DOWN_UNTIL.clear()
         intent, model, log = A.understand("blue kurta", "key", ["slow-model", "fast-model"])
-        assert model == "fast-model" and intent["soft"]["colours"] == ["blue"] and "within" in log[0], log
+        assert model == "fast-model" and intent["soft"]["colours"] == ["blue"] and "in time" in log[0], log
         assert A.model_order(["slow-model", "fast-model"]) == ["fast-model", "slow-model"]
         assert A.CALL_LOG[-2]["status"] == "no response" and A.CALL_LOG[-1]["status"] == 200
     finally:
         A.requests.post = real; A._DOWN_UNTIL.clear(); A._LAST_OK[0] = None
+
+
+def test_refine_keeps_the_previous_search():
+    # "outfits for trekking" then "pink colour" = pink trekking outfits, not every pink product (pink sarees)
+    prev = {"hard": {"category": "fashion", "gender": "women", "types": [], "style": "western"},
+            "soft": {"occasion": "sports", "fabrics": ["polyester", "quick-dry"], "fabric_named": False, "colour_family": ["bright"]}}
+    pink = {"hard": {"category": "fashion"}, "soft": {"colours": ["pink"]}}
+    it, kept = A.merge_followup(pink, prev)
+    assert it["soft"]["occasion"] == "sports" and it["hard"]["style"] == "western" and it["soft"]["colours"] == ["pink"]
+    assert "colour family" not in kept and not it["soft"].get("colour_family")   # the new colour replaces the old one
+    it, _ = A.enrich(A.validate_intent(it)[0])
+    assert not any(p["type"] in ("saree", "lehenga") for p, _ in A.search(it, max_results=8)[0])
+    # a pivot to another product is a new search: keeps who and budget, drops the trekking constraints
+    sarees = {"hard": {"category": "fashion", "types": ["saree"]}, "soft": {"occasion": "wedding"}}
+    it, kept = A.merge_followup(sarees, dict(prev, hard=dict(prev["hard"], budget_max=3000)))
+    assert it["hard"]["budget_max"] == 3000 and it["hard"]["gender"] == "women" and it["soft"].get("occasion") == "wedding"
+    assert not it["soft"].get("fabrics") and it["hard"].get("style") is None
 
 
 def test_fast():

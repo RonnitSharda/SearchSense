@@ -145,6 +145,15 @@ TOP_CHART = {"XS": {"Chest (in)": 32, "Waist (in)": 26, "Shoulder (in)": 13.5}, 
 WAIST_CHART = {w: {"Waist (in)": int(w), "Hip (in)": int(w) + 8, "Inseam (in)": 30} for w in WAIST_ORDER}
 
 
+def size_chart(sizes=None, waist=False):
+    """Standard size chart (illustrative), optionally only the sizes a product comes in."""
+    chart = WAIST_CHART if waist else TOP_CHART
+    st.dataframe([{"Size": k, **v} for k, v in chart.items() if not sizes or k in sizes], hide_index=True, use_container_width=True)
+    st.caption("Standard Indian size chart in inches (illustrative). Measure yourself and pick the size whose numbers sit just "
+               "above yours. " + ("Waist: around your natural waist; hip: the fullest part." if waist else
+                                  "Chest: around the fullest part; waist: the narrowest; shoulder: seam to seam."))
+
+
 def mark(ok):
     """Verifier result: pass, fail, or unknown (the listing doesn't state it)."""
     return "✓" if ok else ("?" if ok is None else "✕")
@@ -306,6 +315,9 @@ def run_search(q, followup=False, exact=False):
             S.result, S.view = res, "search"
             record_search(res)
             return
+        if prev:   # a refinement keeps the previous search's constraints the new message didn't change
+            intent, kept = A.merge_followup(intent, prev)
+            res["steps"].append(("Memory", "merge_followup()", "kept from your previous search: " + (", ".join(kept) or "nothing (new search)")))
         h = intent.setdefault("hard", {})
         if not h.get("gender") and h.get("category", "fashion") in (None, "fashion") and S.profile.get("gender"):
             h["gender"] = S.profile["gender"]
@@ -453,14 +465,58 @@ def set_anchor(brand, size):
     size, so the sidebar never shows two different sizes. Runs as a button callback, before the sidebar widgets exist."""
     pr, k = S.profile, S.profile["name"]
     pr["anchor_brand"] = brand
+    listed = brand in ANCHOR_BRANDS
+    S[f"other_{k}"] = not listed
+    S[f"abt_{k}"] = "" if listed else brand   # a brand not in the list shows under "Other (type it)"
     if str(size).isdigit():
         pr["waist"] = S[f"wa_{k}"] = str(size)
-    else:
-        pr["anchor_size"] = pr["usual_size"] = S[f"us_{k}"] = size
+    else:   # your usual size becomes our equivalent of the brand's size (Zara runs small: Zara M -> our S)
+        pr["anchor_size"] = size
+        pr["usual_size"] = S[f"us_{k}"] = A.our_size(brand, size)
 
 
 def clear_anchor():
+    k = S.profile["name"]
     S.profile.update(anchor_brand=None, anchor_size=None)
+    S[f"other_{k}"] = False
+    if f"abt_{k}" in S: S[f"abt_{k}"] = ""   # otherwise the typed name would set the brand again
+
+
+# The fit profile corrects itself: pick a brand and your size in it fills in from your usual size (Zara runs small, so
+# usual M -> Zara L); set your size in the brand and your usual size follows (Zara M -> our S); change your usual size
+# and the brand size follows. These run as callbacks, before the sidebar widgets are drawn.
+def _brand_changed(k, key):
+    pr = S.profiles[k]
+    ab = S.get(key)
+    S[f"other_{k}"] = ab == OTHER_BRAND   # keep "Other (type it)" selected while the shopper types
+    if ab == OTHER_BRAND:
+        ab = (S.get(f"abt_{k}") or "").strip() or None
+    if ab in (None, "None / not sure"):
+        pr.update(anchor_brand=None, anchor_size=None); return
+    pr["anchor_brand"] = ab
+    if pr.get("usual_size"):
+        pr["anchor_size"] = A.brand_size(ab, pr["usual_size"])
+
+
+def _typed_brand_changed(k):
+    ab = (S.get(f"abt_{k}") or "").strip() or None
+    pr = S.profiles[k]
+    pr["anchor_brand"] = ab
+    pr["anchor_size"] = A.brand_size(ab, pr["usual_size"]) if ab and pr.get("usual_size") else None
+
+
+def _anchor_size_changed(k, key):
+    pr, v = S.profiles[k], S.get(key)
+    pr["anchor_size"] = None if v in (None, "Not set") else v
+    if pr["anchor_size"] and pr.get("anchor_brand"):
+        pr["usual_size"] = S[f"us_{k}"] = A.our_size(pr["anchor_brand"], pr["anchor_size"])
+
+
+def _usual_size_changed(k):
+    pr, v = S.profiles[k], S.get(f"us_{k}")
+    pr["usual_size"] = None if v in (None, "Not set") else v
+    if pr["usual_size"] and pr.get("anchor_brand"):
+        pr["anchor_size"] = A.brand_size(pr["anchor_brand"], pr["usual_size"])
 
 
 def use_as_anchor(pid, size):
@@ -511,29 +567,33 @@ with st.sidebar:
     k = pr["name"]   # widget keys per profile, so switching profiles shows that person's values
     # a default only on first show: set_anchor() may already have put a value in session state, and Streamlit warns on both
     first = lambda key, i: {} if key in S else dict(index=i)
-    us = st.selectbox("Usual top size", ["Not set"] + SIZE_ORDER, key=f"us_{k}",
+    us = st.selectbox("Usual top size", ["Not set"] + SIZE_ORDER, key=f"us_{k}", on_change=_usual_size_changed, args=(k,),
                       **first(f"us_{k}", (SIZE_ORDER.index(pr["usual_size"]) + 1) if pr.get("usual_size") in SIZE_ORDER else 0))
     wa = st.selectbox("Usual waist (jeans)", ["Not set"] + WAIST_ORDER, key=f"wa_{k}",
                       **first(f"wa_{k}", (WAIST_ORDER.index(pr["waist"]) + 1) if pr.get("waist") in WAIST_ORDER else 0))
     brands = [b for b in ANCHOR_BRANDS if b != "None / not sure"]
     cur = pr.get("anchor_brand")
     opts = ["None / not sure"] + brands + [OTHER_BRAND]
-    ab = st.selectbox("Brand that fits you best", opts, key=f"ab_{k}_{cur}",
-                      index=opts.index(cur) if cur in opts else (opts.index(OTHER_BRAND) if cur else 0))
+    ab_key = f"ab_{k}_{cur}"
+    ab = st.selectbox("Brand that fits you best", opts, key=ab_key, on_change=_brand_changed, args=(k, ab_key),
+                      index=opts.index(cur) if cur in opts else (opts.index(OTHER_BRAND) if cur or S.get(f"other_{k}") else 0))
     if ab == OTHER_BRAND:
-        typed = st.text_input("Type the brand", value=cur if cur not in opts else "", key=f"abt_{k}", placeholder="e.g. Uniqlo, Libas")
-        ab = typed.strip() or None
+        typed = st.text_input("Type the brand", key=f"abt_{k}", **({} if f"abt_{k}" in S else dict(value=cur if cur and cur not in opts else "")), placeholder="e.g. Uniqlo, Libas",
+                              on_change=_typed_brand_changed, args=(k,))
+        ab = (typed or "").strip() or None
     if ab and ab != "None / not sure":
-        cur_sz = pr.get("anchor_size") or pr.get("usual_size")
-        asz = st.selectbox(f"Your top size in {ab}", ["Not set"] + SIZE_ORDER, key=f"as_{k}_{ab}_{pr.get('anchor_size')}",
+        cur_sz = pr.get("anchor_size") or (A.brand_size(ab, pr["usual_size"]) if pr.get("usual_size") else None)
+        as_key = f"as_{k}_{ab}_{pr.get('anchor_size')}"
+        asz = st.selectbox(f"Your top size in {ab}", ["Not set"] + SIZE_ORDER, key=as_key, on_change=_anchor_size_changed, args=(k, as_key),
                            index=(SIZE_ORDER.index(cur_sz) + 1) if cur_sz in SIZE_ORDER else 0)
         pr["anchor_size"] = None if asz == "Not set" else asz
-        used = [f"tops: **{ab} {pr['anchor_size']}**" + (f" (instead of your usual {us})" if us not in ("Not set", pr["anchor_size"]) else "")
-                if pr["anchor_size"] else None,
-                f"jeans: **waist {wa}**" if wa != "Not set" else None]
-        used = [u for u in used if u]
-        if used:
-            st.caption("Size badges use " + "; ".join(used) + ".")
+        note = A.brand_note(ab)
+        if pr["anchor_size"]:
+            ours = A.our_size(ab, pr["anchor_size"])
+            st.caption(f"{note[0].upper() + note[1:]}: **{ab} {pr['anchor_size']} ≈ our {ours}**, so size badges use **{ours}** for tops"
+                       + (f"; jeans use **waist {wa}**." if wa != "Not set" else "."))
+        else:
+            st.caption(note[0].upper() + note[1:] + ". Pick your size in it to size every product.")
         st.button("✕ Stop using this brand", key=f"clr_{k}", on_click=clear_anchor, use_container_width=True)
     gd = st.radio("Shops for", ["Women", "Men", "Any"], horizontal=True, key=f"gd_{k}",
                   index={"women": 0, "men": 1}.get(pr.get("gender"), 2))
@@ -542,6 +602,9 @@ with st.sidebar:
               anchor_brand=None if ab in (None, "None / not sure") else ab, past_brands=pb,
               anchor_size=pr.get("anchor_size") if ab not in (None, "None / not sure") else None,
               gender=None if gd == "Any" else gd.lower())
+
+    with st.expander("📏 Size chart"):
+        size_chart()
 
     # past orders: browse and pick one as the size anchor, or shop something similar
     with st.expander(f"🧾 Past orders ({len(pr.get('orders', []))})"):
@@ -1130,8 +1193,9 @@ def view_admin():
     with st.expander("Configuration"):
         st.markdown(f"- **Catalog:** {html.escape(CATALOG_SOURCE)} · {len(PRODUCTS):,} products\n"
                     f"- **Models (GEMINI_MODELS):** {', '.join(MODELS)}\n"
-                    f"- **Thinking:** the model's default (no cap) · **Time limit per AI call:** {A.TIMEOUT[1]}s, then the next model "
-                    f"(order now: {', '.join(A.model_order(MODELS))})\n"
+                    f"- **Thinking:** the model's default (no cap) · **Time limit per AI call:** "
+                    f"{'none' if not A.TIMEOUT else str(A.TIMEOUT[1]) + 's, then the next model'} "
+                    f"(model order now: {', '.join(A.model_order(MODELS))})\n"
                     f"- **AI answers cached:** {len(_intent_cache())} (identical searches skip Gemini)\n"
                     f"- **This visitor:** {S.sid} · Streamlit {st.__version__} · Python {sys.version.split()[0]}")
 
@@ -1675,11 +1739,8 @@ def view_product():
                 scale = WAIST_ORDER if p["sizes"][0].isdigit() else SIZE_ORDER
                 sz = a2.selectbox("Your size", scale, index=2, key="fqs")
                 a3.button("Check fit", use_container_width=True, disabled=not brand, on_click=set_anchor, args=(brand, sz))
-                if low:
-                    with st.expander("Rather not answer? Size chart with key measurements", expanded=True):
-                        st.dataframe([{"Size": k, **v} for k, v in (WAIST_CHART if scale is WAIST_ORDER else TOP_CHART).items() if k in p["sizes"]],
-                                     hide_index=True, use_container_width=True)
-                        st.caption("Standard Indian size chart (illustrative). Measure yourself and pick the size whose numbers sit just above yours.")
+            with st.expander("📏 Size chart" + (" · rather not answer? Use the key measurements" if low else ""), expanded=low):
+                size_chart(p["sizes"], waist=p["sizes"][0].isdigit())
         else:
             st.caption("Fit check not needed for this product.")
         st.markdown('<div class="layer">Fit &amp; fabric tips</div>', unsafe_allow_html=True)

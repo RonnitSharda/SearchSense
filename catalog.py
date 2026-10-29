@@ -160,7 +160,10 @@ if os.path.exists(DATA_FILE):
         CATALOG_SOURCE = f"demo only (could not read Myntra data: {str(e)[:60]})"
 
 # Size anchors from other brands (illustrative brand-to-platform offsets)
-ANCHOR_BRANDS = {"Zara": 0, "H&M": 0, "Uniqlo": +1, "Levi's": 0, "W": -1, "Biba": 0, "FabIndia": 0, "None / not sure": None}
+# How a brand's labels compare with ours (illustrative): our size = the brand's size + offset.
+# -1 = the brand runs small (a Zara M fits like our S); +1 = it runs large; 0 = standard. Brands not listed count as standard.
+ANCHOR_BRANDS = {"Zara": -1, "H&M": 0, "Uniqlo": -1, "Mango": -1, "Levi's": 0, "Marks & Spencer": +1, "W": 0, "Biba": 0,
+                 "FabIndia": +1, "Libas": 0, "Allen Solly": 0, "Roadster": 0, "None / not sure": None}
 
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
 

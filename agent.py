@@ -205,6 +205,40 @@ SYSTEM = build_system_prompt(ALLOWED, TYPES_BY_CATEGORY, sorted(set(COLOUR_WORDS
 RESPONSE_SCHEMA = build_response_schema(ALLOWED)
 
 
+_HARD_KEEP = ("category", "gender", "budget_min", "budget_max", "size", "types", "style")
+_SOFT_KEEP = ("occasion", "time", "city", "month", "weather", "colour_family", "colours", "fabrics", "pairs", "needs")
+
+
+def merge_followup(intent, prev):
+    """A refinement keeps the previous search: anything the new message leaves empty is carried over ("outfits for trekking"
+    then "pink" = pink trekking outfits, not every pink product). A pivot (a different product, occasion or category) is a
+    new search that keeps only who it's for, the size and the budget. Returns (intent, [what was kept])."""
+    if not prev:
+        return intent, []
+    h, s = intent.setdefault("hard", {}), intent.setdefault("soft", {})
+    ph, ps = prev.get("hard") or {}, prev.get("soft") or {}
+    empty = lambda v: v in (None, [], "")
+    pivot = (not empty(h.get("types")) and not empty(ph.get("types")) and set(h["types"]) != set(ph["types"])) \
+        or (not empty(h.get("types")) and empty(ph.get("types")) and not empty(ps.get("occasion")) and not empty(s.get("occasion"))
+            and s["occasion"] != ps["occasion"]) \
+        or (not empty(s.get("occasion")) and not empty(ps.get("occasion")) and s["occasion"] != ps["occasion"]) \
+        or (not empty(h.get("category")) and not empty(ph.get("category")) and h["category"] != ph["category"])
+    kept = []
+    for k in (("gender", "size", "budget_min", "budget_max") if pivot else _HARD_KEEP):
+        if empty(h.get(k)) and not empty(ph.get(k)):
+            h[k] = ph[k]; kept.append(k.replace("_", " "))
+    if not pivot:
+        for k in _SOFT_KEEP:
+            if k in ("colour_family", "colours") and (s.get("colours") or s.get("colour_family")):
+                continue   # a new colour replaces the old colour, whichever way it was said
+            if k == "weather" and s.get("city") and s.get("city") != ps.get("city"):
+                continue
+            if empty(s.get(k)) and not empty(ps.get(k)):
+                s[k] = ps[k]; kept.append(k.replace("_", " "))
+                if k == "fabrics": s["fabric_named"] = bool(ps.get("fabric_named"))
+    return intent, kept
+
+
 def _compact_previous(prev):
     """Previous search's constraints, without empty fields, for follow-ups."""
     if not prev: return ""
@@ -262,7 +296,7 @@ def _log_call(purpose, model, t0, r=None, err=None, body=None):
 
 # Reliability: free-tier requests can queue for minutes (we saw 350s). Each call gets a time limit; a model that times
 # out or is refused (quota, overload) is tried last for a while, and the last model that answered is tried first.
-TIMEOUT = (5, 20)                      # seconds: connect, answer
+TIMEOUT = None                         # no time limit for now (quality over speed); set e.g. (5, 20) to cap waits
 COOLDOWN = {429: 60, "timeout": 300}   # quota refusals often clear within a minute; a queueing model stays at the back longer
 _LAST_OK, _DOWN_UNTIL = [None], {}
 
@@ -280,7 +314,7 @@ def _post_logged(purpose, model, url, body):
     except Exception as e:
         timed_out = isinstance(e, requests.Timeout)
         _DOWN_UNTIL[model] = time.time() + COOLDOWN["timeout"]
-        err = RuntimeError(f"no answer within {TIMEOUT[1]}s, trying the next model") if timed_out else e
+        err = RuntimeError("no answer in time, trying the next model") if timed_out else e
         _log_call(purpose, model, t0, err=err, body=body)
         raise err
     _log_call(purpose, model, t0, r, body=body)
@@ -1141,6 +1175,29 @@ def why_this(p, intent):
 
 
 # ------------------------------------------------------------------ Layer 2: fit agent
+def brand_offset(brand):
+    return ANCHOR_BRANDS.get(brand or "", 0) or 0
+
+
+def our_size(brand, size):
+    """The brand's size label -> our size (Zara runs small: Zara M -> our S)."""
+    if size not in SIZE_ORDER: return size
+    return SIZE_ORDER[max(0, min(len(SIZE_ORDER) - 1, SIZE_ORDER.index(size) + brand_offset(brand)))]
+
+
+def brand_size(brand, size):
+    """Our size -> the brand's label for it (our M -> Zara L)."""
+    if size not in SIZE_ORDER: return size
+    return SIZE_ORDER[max(0, min(len(SIZE_ORDER) - 1, SIZE_ORDER.index(size) - brand_offset(brand)))]
+
+
+def brand_note(brand):
+    """'Zara runs small' / 'Marks & Spencer runs large' / standard / unknown, for captions and reasons."""
+    if not brand or brand == "None / not sure": return ""
+    if brand not in ANCHOR_BRANDS: return f"we don't have {brand}'s size data yet, so its sizes count as standard"
+    return {-1: f"{brand} runs small", 1: f"{brand} runs large"}.get(brand_offset(brand), f"{brand} sizes are standard")
+
+
 def _scale(p):
     return WAIST_ORDER if p["sizes"][0].isdigit() else SIZE_ORDER
 
@@ -1184,7 +1241,7 @@ def fit_agent(p, profile):
         return dict(size=None, confidence="low", reason="No size history or anchor for you yet",
                     ask="Which brand fits you best, and in what size?")
     idx = scale.index(base)
-    offset = ANCHOR_BRANDS.get(profile.get("anchor_brand") or "", 0) or 0
+    offset = brand_offset(brand) if anchored and not p["sizes"][0].isdigit() else 0   # brand sizing applies to S/M/L labels
     adj = -p["fit_signal"]  # runs small (-1) -> size up (+1)
     rec_idx = max(0, min(len(scale) - 1, idx + offset + adj))
     clamped = False
@@ -1206,8 +1263,8 @@ def fit_agent(p, profile):
                  (f", so {rec}" if rec != base else "")
     else:
         reason = f"Based on {source}"
-        if offset:   # e.g. "your Uniqlo S (Uniqlo S ≈ our M)"
-            reason += f" ({brand} {base} ≈ our {scale[max(0, min(len(scale) - 1, idx + offset))]})"
+        if offset:   # e.g. "your Zara M (Zara runs small: Zara M ≈ our S)"
+            reason += f" ({brand_note(brand)}: {brand} {base} ≈ our {scale[max(0, min(len(scale) - 1, idx + offset))]})"
         reason += f"; {p['fit_reviews']} reviews mention fit: {signal}"
         if adj and not clamped: reason += f", so size {'up' if adj > 0 else 'down'} to {rec}"
         if ret_note and clamped: reason += f"; {ret_note}, so {rec}"
