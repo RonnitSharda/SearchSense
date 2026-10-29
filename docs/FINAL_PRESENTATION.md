@@ -103,14 +103,16 @@ SearchSense is sold **business-to-business** and used by shoppers.
 | Query / ask | Myntra search | Amazon search | SearchSense |
 |---|---|---|---|
 | Case query, word for word | **"No results"** | **3 results, all off-target:** western dresses, not ethnic; the top of the page is sponsored silver bracelets; an unrelated hair-straightener ad | Ethnic, pastel, breathable outfits under ₹6,000 that suit silver, every constraint shown as a chip, and a size on each card |
-| *"tshirts for Manali"* (situational) | Ads and mixed men's/women's results; no idea Manali is cold | *to test* | Keeps the t-shirts, knows it's cold, warns, and offers a warm layer in one tap |
+| *"tshirts for Manali"* (situational) | Shows t-shirts (with ads, men's and women's mixed); **ignores that Manali is cold**; **no suggestion to add a warm layer** | **Auto-corrects "tshirts" to "shirts"**: the wrong product, and no weather either | Keeps the t-shirts, knows Manali is cold, says so, and offers **"Add a warm layer"** in one tap |
 | *"Return last order"*, *"Track my order"* | Treated as a product search | Treated as a product search | Recognised as support and handed to Customer Care |
 | Refine: *"same but in blue"*, *"#2 but cheaper"* | Not possible in the search bar (filters only) | Not possible in the search bar (filters only) | The conversation continues: only what you changed changes |
-| Ambiguous: *"Marriage outfits"*, *"outfits for jaggu"* | *to test* | *to test* | Asks **one** question (Ethnic or western? Is Jaggu a man or a woman?) |
-| Typos and Hinglish: *"vlue tops with flower under 700"*, *"shaadi ke liye kurta"* | *to test* | *to test* | Fixed and mapped (blue, floral print, under ₹700; shaadi → wedding) |
+| Ambiguous: *"Marriage outfits"* | **No clarifying question**: a mixed grid to scroll | **No clarifying question** | Asks **one** question: Ethnic, Western or Show both, one tap each |
+| Typo + aesthetic: *"vlue tops with flower"* | **No blue filter applied**; weak results | **No blue filter applied**; weak results | "vlue" → blue fixed; **Colour: Blue** and **Print: Floral** applied as filters; every result a blue floral top |
 | Size, inside search and before checkout | Size help on the product page | Size suggestions on some fashion products | A size on every result card with the reason, plus a pre-checkout size check |
 
-*Put the dated screenshots on the slide. Fill or drop the* to test *cells: show only what we actually tried.*
+*All rows are from our own tests on the live sites (October 2026). Put the dated screenshots on the slide.*
+
+**What the tests show, in one line:** on the case query, a situational query, an ambiguous query, a typo with an aesthetic, support asks and refinement, **both search bars fail every time**: no results, wrong auto-corrections, no context, no questions, no filters from the sentence.
 
 ### 2.2 The competitive landscape: four kinds of players
 
@@ -128,9 +130,10 @@ SearchSense is sold **business-to-business** and used by shoppers.
 |---|---|---|---|---|---|---|
 | Where it lives | Search bar | Separate chat | Search bar | Search bar | Product page | **Search bar → product → cart** |
 | Understands full sentences | ✗ (our tests) | ✓ | ◐ | ◐ | ✗ | **✓** |
-| Lifestyle context (weather by city and month, occasion and time) | ✗ | ◐ | ✗ | ✗ | ✗ | **✓** |
-| Visual aesthetics as filters (colour family, print, sleeves, neckline, pairs with silver or gold) | ◐ (manual filters) | ◐ | ◐ | ◐ | ✗ | **✓ from one sentence** |
-| One clarifying question, only when needed | ✗ | ◐ | ◐ | ✗ | ✗ | **✓** |
+| Fixes typos without changing the product | ◐ (our tests: Amazon turned "tshirts" into "shirts") | ✓ | ◐ | ◐ | ✗ | **✓, with one-tap undo** |
+| Lifestyle context (weather by city and month, occasion and time) | ✗ (our tests: Manali) | ◐ | ✗ | ✗ | ✗ | **✓** |
+| Visual aesthetics as filters (colour family, print, sleeves, neckline, pairs with silver or gold) | ✗ from the sentence (our tests: no blue filter); manual filters only | ◐ | ◐ | ◐ | ✗ | **✓ from one sentence** |
+| One clarifying question, only when needed | ✗ (our tests: Marriage outfits) | ◐ | ◐ | ✗ | ✗ | **✓** |
 | Conversational refine with memory | ✗ | ✓ (in chat) | ◐ | ✗ | ✗ | **✓ in the search bar** |
 | Never a dead end (relaxes and explains) | ✗ ("No results") | ◐ | ◐ | ◐ | ✗ | **✓** |
 | Support requests routed | ✗ (our tests) | ◐ | ✗ | ✗ | ✗ | **✓** |
@@ -155,7 +158,7 @@ SearchSense is sold **business-to-business** and used by shoppers.
 3. **Global tools miss India:** Hinglish, haldi and sangeet, city weather, ₹ budgets.
 4. **Search bars still break on exactly the case's query.** That's our proof.
 
-**Say:** "We tried the case query ourselves. Myntra: no results. Amazon: three western dresses under bracelet ads. The big marketplaces built chat assistants, but only for themselves, and their search bars still break. Search vendors stop at results, and fit vendors start at the product page. Nobody owns the whole journey, and nobody is built for how India shops."
+**Say:** "We tried the case query ourselves. Myntra: no results. Amazon: three western dresses under bracelet ads. 'Tshirts for Manali'? Myntra shows t-shirts and never mentions it's cold; Amazon changes it to shirts. 'Marriage outfits'? Neither asks a single question. 'Vlue tops with flower'? Neither even applies a blue filter. The big marketplaces built chat assistants, but only for themselves, and their search bars still break. Search vendors stop at results, and fit vendors start at the product page. Nobody owns the whole journey, and nobody is built for how India shops."
 
 ---
 
@@ -493,7 +496,7 @@ Open **🎬 Demo** → **▶ Start from step 1** → **Next ▶**. The yellow bo
 ## 9. Q&A and stress-test bank
 
 **Product and market**
-1. **"Myntra has Maya and Amazon has Rufus. Why you?"** They're in-house chat assistants, not for sale, and separate from the search bar, which still fails the case query. We sell the whole journey (search → size → cart) to everyone who can't build it.
+1. **"Myntra has Maya and Amazon has Rufus. Why you?"** They're in-house chat assistants, not for sale, and separate from the search bar, which still fails: no results for the case query, "tshirts" auto-corrected to "shirts", no clarifying question for "Marriage outfits", no blue filter for "vlue tops with flower". We sell the whole journey (search → size → cart) to everyone who can't build it.
 2. **"Algolia, Constructor and Unbxd sell AI search."** They stop at results, and fit tools start at the product page. Nobody owns search → size → return-safe cart, and global tools aren't built for Hinglish, haldi or city weather. We can sit on top of an existing search too.
 3. **"How will you hit +20% and −15%?"** Through the levers in §4.4. The evidence: searchers already convert about 2.5×, 10–15% of searches are zero-result today, and fit tools report up to 24% fewer fit returns. The 90-day A/B pilot measures both numbers.
 4. **"Who pays, and how much?"** The platform or brand, about ₹0.25 per AI-mode search, with simple searches free. Our cost is ₹0.02–0.085, a 66–92% gross margin. For the customer, it's many times ROI.
