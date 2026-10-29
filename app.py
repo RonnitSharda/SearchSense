@@ -28,6 +28,11 @@ def _secret(k, default=None):
 
 API_KEY = _secret("GEMINI_API_KEY")
 MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
+# Cohere (Command A) is the backup, tried after every Gemini model fails; it also works on its own without a Gemini key
+A.COHERE_KEY = _secret("COHERE_API_KEY") or None
+A.COHERE_MODELS = [m.strip() for m in (_secret("COHERE_MODELS") or ",".join(A.COHERE_MODELS)).split(",") if m.strip()]
+AI_ON = A.ai_available(API_KEY)
+ALL_MODELS = A.with_backup(MODELS, API_KEY) or MODELS   # in the order they are tried
 
 st.markdown(CSS, unsafe_allow_html=True)
 # the theme goes first on every run, before any search work, so it stays applied while results load and after.
@@ -254,7 +259,7 @@ def run_search(q, followup=False, exact=False):
     A.set_log_tag(f"{S.sid}-{S.search_seq}")   # Gemini calls made during this search carry this id (admin tab)
     S.removed_chips = []
     q_in = resolve_followup(q) if followup else q
-    r = A.route(q_in if followup else q, ai=bool(API_KEY))
+    r = A.route(q_in if followup else q, ai=AI_ON)
     if exact:   # one-tap undo: search the shopper's exact words, no corrections, no AI
         r = dict(stage=0, label="Undo: your exact words", query=q, fixes=[], reason="Searching your exact words, without spelling fixes")
     if followup and r["stage"] in (0, 2):
@@ -273,7 +278,7 @@ def run_search(q, followup=False, exact=False):
                              f"{len(items)} matches; required words: {', '.join(info.get('words', [])) or 'none'} ({info.get('mode', '')}; "
                              "a colour also accepts close shades)" + (f"; fashion limited to {g} + unisex" if g else "")
                              + ". No AI call: short, specific queries skip Layer 1"))
-        if items or not API_KEY or exact:
+        if items or not AI_ON or exact:
             res.update(kind="keyword", items=[p["id"] for p in items], kw_info=info,
                        kw_filters=A.keyword_filters(r["query"], S.profile.get("gender")))
             S.history.append(f"{r['query']} -> normal search")
@@ -637,7 +642,7 @@ with st.sidebar:
             st.image(data, use_container_width=True)
             d, model, log = cached_read_image(hashlib.md5(data).hexdigest(), data, up.type or "image/jpeg", API_KEY, tuple(MODELS))
             if not d:
-                st.info("Reading photos needs AI mode (a Gemini key)." if not API_KEY else "Couldn't read that photo: " + "; ".join(log)[:160])
+                st.info("Reading photos needs AI mode (a Gemini or Cohere key)." if not AI_ON else "Couldn't read that photo: " + "; ".join(log)[:160])
             else:
                 st.markdown(f"**I read:** {html.escape(d.get('summary') or d.get('kind') or '')}")
                 facts = [f"{k2}: {d[k2]}" for k2 in ("brand", "product_type", "size", "waist", "colour", "price") if d.get(k2)]
@@ -653,7 +658,8 @@ with st.sidebar:
 
     st.divider()
     show_trace = st.toggle("Show agent trace", value=True, help="Shows the trace under each search result. The 🧠 AI trace tab always has the full trace.")
-    st.markdown(f"**AI model:** {'Gemini (' + MODELS[0] + ')' if API_KEY else 'offline rules (no key set)'}")
+    st.markdown(f"**AI model:** {('Gemini (' + MODELS[0] + ')' if API_KEY else 'Cohere (' + A.COHERE_MODELS[0] + ')') if AI_ON else 'offline rules (no key set)'}"
+                + (f" · backup: Cohere ({A.COHERE_MODELS[0]})" if API_KEY and A.COHERE_KEY else ""))
     st.caption(f"Catalog: {CATALOG_SOURCE}. Titles, brands, prices and images are real Myntra listings; colour, fabric, occasion "
                "and style are inferred from the text, and sizes and fit signals are simulated for this demo.")
     st.divider()
@@ -950,7 +956,7 @@ def _search_detail(x):
     elif not calls and x["kind"] == "help" and not x.get("intent"):
         st.info("No AI call: the router recognised an order or returns question and sent it straight to Customer Care.")
     elif not calls:
-        st.info("No Gemini call recorded" + ("" if API_KEY else " (no GEMINI_API_KEY: offline rules were used)") + ".")
+        st.info("No AI call recorded" + ("" if AI_ON else " (no GEMINI_API_KEY or COHERE_API_KEY: offline rules were used)") + ".")
     for i, cl in enumerate(calls, 1):
         with st.container(border=True):
             _show_call(cl, i)
@@ -1080,7 +1086,7 @@ def _run_prerun():
             for o in cl["options"]:
                 for k, v in base.items(): S[k] = copy.deepcopy(v)
                 one(f"{res['query']} — {o}", profile)
-        if ex.get("qa") and API_KEY:
+        if ex.get("qa") and AI_ON:
             for p in products(res)[:2]:
                 for pq in PRODUCT_QUESTIONS:
                     n0 = len(A.CALL_LOG)
@@ -1096,6 +1102,34 @@ def _run_prerun():
     S.prerun_json = _save_prerun()
 
 
+def _cohere_test_panel():
+    """Send one search straight to the Cohere backup (skipping Gemini) to check the key, the model and the schema."""
+    st.markdown('<div class="layer">🧪 Test the Cohere backup</div>', unsafe_allow_html=True)
+    if not A.COHERE_KEY:
+        st.caption("Off: add a COHERE_API_KEY secret to turn on the backup (optional COHERE_MODELS, default "
+                   f"{', '.join(A.COHERE_MODELS)}). Gemini stays first; Cohere is tried only when every Gemini model fails.")
+        return
+    st.caption(f"Sends this search to {A.COHERE_MODELS[0]} only, with the same master prompt and schema, and does not cache it. "
+               "Each test uses 1 of the trial key's 1,000 calls a month.")
+    q = st.text_input("Search to test", PROBLEM_QUERY, key="cohere_test_q")
+    if st.button("🧪 Run on Cohere", key="cohere_test_go"):
+        n0, t0 = len(A.CALL_LOG), time.time()
+        A.set_log_tag(None)
+        intent, model, log = A.understand(q, None, [])   # no Gemini key -> the Cohere backup only
+        secs = time.time() - t0
+        if intent is None:
+            st.error("Cohere did not answer: " + "; ".join(log)[:300])
+        else:
+            enriched, _ = A.enrich(intent)
+            items = A.search(enriched, max_results=6)[0]
+            st.success(f"{model} answered in {secs:.1f}s: “{intent.get('interpretation')}” · {len(items)} products found")
+            st.markdown(" · ".join(label for label, _, _ in chips_from(enriched)) or "No filters")
+            st.json(intent, expanded=False)
+        for c in list(A.CALL_LOG)[n0:]:
+            with st.expander(f"Call · {c['model']} · {c['status']} · {c['secs']}s"):
+                _call_detail(c)
+
+
 def _prerun_panel():
     st.markdown('<div class="layer">⚡ Demo pre-run · make the demo searches instant</div>', unsafe_allow_html=True)
     plan = _prerun_plan()
@@ -1105,8 +1139,8 @@ def _prerun_panel():
                f"{len(_intent_cache())} searches, {len(_qa_cache())} product answers. Takes about 5–10 minutes on the free tier "
                "(calls are paced to its per-minute limit). Tip: put the model that answers fastest first in GEMINI_MODELS.")
     c1, c2, _ = st.columns([1.4, 1.6, 3])
-    go = c1.button("⚡ Pre-run demo", type="primary", use_container_width=True, disabled=not API_KEY,
-                   help=None if API_KEY else "Needs GEMINI_API_KEY")
+    go = c1.button("⚡ Pre-run demo", type="primary", use_container_width=True, disabled=not AI_ON,
+                   help=None if AI_ON else "Needs GEMINI_API_KEY or COHERE_API_KEY")
     c2.download_button("⬇️ Download saved answers", S.get("prerun_json") or _prerun_json(), file_name="demo_cache.json",
                        mime="application/json", use_container_width=True,
                        help="Commit this file as data/demo_cache.json so the answers load on every restart")
@@ -1137,21 +1171,21 @@ def view_admin():
     recent = {x["sid"] for x in searches if time.time() - x["at"] < 1800}
     ok = sum(1 for c in calls if c["status"] == 200)
     m = st.columns(5)
-    m[0].metric("AI key", "Set" if API_KEY else "Not set")
+    m[0].metric("AI keys", " + ".join(k for k, v in (("Gemini", API_KEY), ("Cohere", A.COHERE_KEY)) if v) or "Not set")
     m[1].metric("Up for", f"{int(up // 3600)}h {int(up % 3600 // 60)}m")
     m[2].metric("Searches", len(searches))
     m[3].metric("Active visitors (30 min)", len(recent))
-    m[4].metric("Gemini calls ok / failed", f"{ok} / {len(calls) - ok}")
+    m[4].metric("AI calls ok / failed", f"{ok} / {len(calls) - ok}")
 
     st.markdown('<div class="layer">Models · tried in this order for every AI search</div>', unsafe_allow_html=True)
     rows = []
-    for i, mdl in enumerate(MODELS):
+    for i, mdl in enumerate(ALL_MODELS + ([A.COHERE_VISION] if A.COHERE_KEY else [])):
         mc = [c for c in calls if c["model"] == mdl]
         good = [c for c in mc if c["status"] == 200]
         bad = [c for c in mc if c["status"] != 200]
         secs = sorted(c["secs"] for c in good)
         think = [c["thinking_tokens"] for c in good if c.get("thinking_tokens")]
-        rows.append({"#": i + 1, "Model": mdl, "Calls": len(mc), "OK": len(good), "Failed": len(bad),
+        rows.append({"#": i + 1, "Model": mdl + (" (backup, photos)" if mdl == A.COHERE_VISION else " (backup)" if A.is_cohere(mdl) else ""), "Calls": len(mc), "OK": len(good), "Failed": len(bad),
                      "Quota refusals (429)": sum(1 for c in bad if c["status"] == 429),
                      "Median time (s)": secs[len(secs) // 2] if secs else None,
                      "Avg thinking tokens": round(sum(think) / len(think)) if think else None,
@@ -1176,8 +1210,8 @@ def view_admin():
         if st.button("🔍 View this call (sent + reply)", disabled=not pick, key="adm_call_btn"):
             _call_detail(list(reversed(calls))[pick[0]])
     else:
-        st.info("No Gemini calls yet. " + ("Run an AI search (a full sentence) and refresh." if API_KEY else
-                                         "There is no GEMINI_API_KEY, so the app is using offline rules."))
+        st.info("No AI calls yet. " + ("Run an AI search (a full sentence) and refresh." if AI_ON else
+                                         "There is no GEMINI_API_KEY or COHERE_API_KEY, so the app is using offline rules."))
 
     st.markdown('<div class="layer">Searches · all visitors, newest first</div>', unsafe_allow_html=True)
     if searches:
@@ -1197,14 +1231,16 @@ def view_admin():
     else:
         st.info("No searches yet.")
 
+    _cohere_test_panel()
     _prerun_panel()
 
     with st.expander("Configuration"):
         st.markdown(f"- **Catalog:** {html.escape(CATALOG_SOURCE)} · {len(PRODUCTS):,} products\n"
-                    f"- **Models (GEMINI_MODELS):** {', '.join(MODELS)}\n"
+                    f"- **Models (GEMINI_MODELS):** {', '.join(MODELS)} · **Backup (COHERE_MODELS):** "
+                    f"{', '.join(A.COHERE_MODELS) + ' + ' + A.COHERE_VISION + ' for photos' if A.COHERE_KEY else 'off (no COHERE_API_KEY)'}\n"
                     f"- **Thinking:** the model's default (no cap) · **Time limit per AI call:** "
                     f"{'none' if not A.TIMEOUT else str(A.TIMEOUT[1]) + 's, then the next model'} "
-                    f"(model order now: {', '.join(A.model_order(MODELS))})\n"
+                    f"(model order now: {', '.join(A.model_order(ALL_MODELS))})\n"
                     f"- **AI answers cached:** {len(_intent_cache())} (identical searches skip Gemini)\n"
                     f"- **This visitor:** {S.sid} · Streamlit {st.__version__} · Python {sys.version.split()[0]}")
 
@@ -1683,7 +1719,7 @@ def cached_ask(p, q):
     if key in _qa_cache():
         return _qa_cache()[key]
     ans, src = A.ask_product(p, q, API_KEY, MODELS)
-    if API_KEY and not src.startswith("listing"):
+    if AI_ON and not src.startswith("listing"):
         _qa_cache()[key] = (ans, src)
     return ans, src
 

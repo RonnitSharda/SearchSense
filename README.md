@@ -67,6 +67,7 @@ python tests/test_search.py         # scenarios, vectorised-vs-reference search,
 ```
 pip install -r requirements.txt
 export GEMINI_API_KEY=your_key      # optional; without it the app uses offline rules
+export COHERE_API_KEY=your_key      # optional backup, tried when every Gemini model fails
 streamlit run app.py
 ```
 
@@ -78,10 +79,12 @@ streamlit run app.py
    ```
    GEMINI_API_KEY = "your-key-from-aistudio.google.com"
    GEMINI_MODELS = "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash"
+   COHERE_API_KEY = "your-key-from-dashboard.cohere.com"   # optional backup
    ```
 4. Deploy. Share the `*.streamlit.app` URL. Make sure the app's sharing is set to **public**.
 
 ## Notes
 - The model list is tried in order; if one fails (quota, wrong name) the next is used, then offline rules. The sidebar shows which model answered.
+- **Cohere backup (optional).** With a `COHERE_API_KEY`, Cohere's Command A (`COHERE_MODELS`, default `command-a-03-2025`) is tried after every Gemini model has failed, with the same master prompt and the same response schema (converted to JSON Schema). Photos go to `command-a-vision-07-2025`. Gemini stays first and leads again as soon as it recovers. A Cohere trial key allows 20 calls a minute and 1,000 a month and is for evaluation, not production. **Admin → 🧪 Test the Cohere backup** sends one search to Cohere only, to check the key.
 - Check the exact model names available to your key in Google AI Studio and edit `GEMINI_MODELS` if needed.
 - Identical queries are cached for an hour, so repeated demo searches don't use quota.

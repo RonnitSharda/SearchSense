@@ -1,5 +1,5 @@
-"""SearchSense agent: router, Gemini intent agent, tools, verifier, fit layer."""
-import json, re, time, difflib, zlib, collections, threading, datetime
+"""SearchSense agent: router, Gemini intent agent (Cohere as backup), tools, verifier, fit layer."""
+import json, os, re, time, difflib, zlib, collections, threading, datetime
 import numpy as np
 import requests
 from catalog import (PRODUCTS, P as DEMO_PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
@@ -261,7 +261,7 @@ def _compact_previous(prev):
     return f"[Previous search constraints: {json.dumps(out, ensure_ascii=False)}] " if out else ""
 
 
-# Every Gemini call, newest last, for the admin tab: model, HTTP result, seconds and token counts (thinking included).
+# Every model call (Gemini, and the Cohere backup), newest last, for the admin tab: model, HTTP result, seconds and token counts (thinking included).
 # Kept in memory for this server process, shared by all visitors; it resets when the app restarts.
 CALL_LOG = collections.deque(maxlen=500)
 _CTX = threading.local()   # each visitor's script runs in its own thread, so the tag links calls to that visitor's search
@@ -273,20 +273,29 @@ def set_log_tag(tag):
 
 
 def _request_text(body):
-    """What we sent, as readable text (photos replaced by a placeholder)."""
+    """What we sent, as readable text (photos replaced by a placeholder); Gemini and Cohere request shapes."""
     out = []
     for c in body.get("contents") or []:
         for part in c.get("parts") or []:
             if "text" in part: out.append(part["text"])
             elif "inline_data" in part:
                 out.append(f"[photo: {part['inline_data'].get('mime_type')}, {len(part['inline_data'].get('data', '')) * 3 // 4 // 1024} KB]")
+    for m in body.get("messages") or []:
+        if m.get("role") == "system": continue   # the master prompt is flagged separately, not repeated in every log row
+        for part in ([{"type": "text", "text": m["content"]}] if isinstance(m.get("content"), str) else m.get("content") or []):
+            if part.get("type") == "text": out.append(part["text"])
+            elif part.get("type") == "image_url":
+                url = part["image_url"]["url"]
+                out.append(f"[photo: {url[5:url.find(';')]}, {len(url) * 3 // 4 // 1024} KB]")
     return "\n".join(out)
 
 
 def _log_call(purpose, model, t0, r=None, err=None, body=None):
+    body = body or {}
     d = dict(at=time.time(), purpose=purpose, model=model, secs=round(time.time() - t0, 2), tag=getattr(_CTX, "tag", None),
-             request=_request_text(body or {}), system_prompt=bool((body or {}).get("systemInstruction")),
-             schema=bool(((body or {}).get("generationConfig") or {}).get("responseSchema")))
+             request=_request_text(body),
+             system_prompt=bool(body.get("systemInstruction") or any(m.get("role") == "system" for m in body.get("messages") or [])),
+             schema=bool((body.get("generationConfig") or {}).get("responseSchema") or (body.get("response_format") or {}).get("schema")))
     if r is None:
         d.update(status="no response", note=str(err)[:200], reply=str(err))
     else:
@@ -294,13 +303,18 @@ def _log_call(purpose, model, t0, r=None, err=None, body=None):
             j = r.json()
         except Exception:
             j = {}
-        u = j.get("usageMetadata") or {}
-        d.update(status=r.status_code, prompt_tokens=u.get("promptTokenCount"), cached_tokens=u.get("cachedContentTokenCount"),
-                 thinking_tokens=u.get("thoughtsTokenCount"), output_tokens=u.get("candidatesTokenCount"))
+        if is_cohere(model):
+            u = (j.get("usage") or {}).get("tokens") or {}
+            d.update(status=r.status_code, prompt_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"))
+        else:
+            u = j.get("usageMetadata") or {}
+            d.update(status=r.status_code, prompt_tokens=u.get("promptTokenCount"), cached_tokens=u.get("cachedContentTokenCount"),
+                     thinking_tokens=u.get("thoughtsTokenCount"), output_tokens=u.get("candidatesTokenCount"))
         if r.status_code != 200:
-            d["note"] = str((j.get("error") or {}).get("message") or r.text)[:200]
+            err = j.get("error") if isinstance(j.get("error"), dict) else {}
+            d["note"] = str(err.get("message") or (j.get("message") if is_cohere(model) else None) or r.text)[:200]
         try:
-            d["reply"] = j["candidates"][0]["content"]["parts"][0]["text"]
+            d["reply"] = _reply_text(model, j)
         except Exception:
             d["reply"] = r.text[:20000]   # error body, or an answer without text
     CALL_LOG.append(d)
@@ -314,15 +328,16 @@ _LAST_OK, _DOWN_UNTIL = [None], {}
 
 
 def model_order(models):
-    """Last model that answered first; models that failed recently go last (never dropped: a slow answer beats none)."""
+    """Last model that answered first; models that failed recently go last (never dropped: a slow answer beats none).
+    The Cohere backup stays behind every working Gemini model, even after it answered while Gemini was down."""
     now = time.time()
-    return sorted(models, key=lambda m: (_DOWN_UNTIL.get(m, 0) > now, m != _LAST_OK[0]))
+    return sorted(models, key=lambda m: (_DOWN_UNTIL.get(m, 0) > now, is_cohere(m), m != _LAST_OK[0]))
 
 
-def _post_logged(purpose, model, url, body):
+def _post_logged(purpose, model, url, body, headers=None):
     t0 = time.time()
     try:
-        r = requests.post(url, json=body, timeout=TIMEOUT)
+        r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
     except Exception as e:
         timed_out = isinstance(e, requests.Timeout)
         _DOWN_UNTIL[model] = time.time() + COOLDOWN["timeout"]
@@ -337,15 +352,85 @@ def _post_logged(purpose, model, url, body):
     return r
 
 
+# ------------------------------------------------------------------ providers
+# Gemini is the main model. Cohere's Command A is the backup, tried only when every Gemini model failed (quota, overload,
+# no answer). Model names starting "command" go to Cohere's Chat API v2 with its own key; same master prompt, same schema.
+COHERE_KEY = os.environ.get("COHERE_API_KEY") or None
+COHERE_MODELS = [m.strip() for m in (os.environ.get("COHERE_MODELS") or "command-a-03-2025").split(",") if m.strip()]
+COHERE_VISION = "command-a-vision-07-2025"   # reads photos (size tags, labels)
+COHERE_URL = "https://api.cohere.com/v2/chat"
+
+
+def is_cohere(model):
+    return model.startswith("command")
+
+
+def ai_available(api_key):
+    return bool(api_key or COHERE_KEY)
+
+
+def with_backup(models, api_key):
+    """Models we can call: the Gemini ones if there is a Gemini key, then the Cohere backup if there is a Cohere key."""
+    out = [m for m in models if not is_cohere(m)] if api_key else []
+    return out + ([m for m in COHERE_MODELS if m not in out] if COHERE_KEY else [])
+
+
+def _reply_text(model, j):
+    return j["message"]["content"][0]["text"] if is_cohere(model) else j["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def _json_schema(s):
+    """Gemini's response schema (OpenAPI style: "STRING", nullable) as the JSON Schema subset Cohere accepts."""
+    out = {}
+    for k, v in s.items():
+        if k == "type": out["type"] = v.lower()
+        elif k == "properties": out[k] = {name: _json_schema(x) for name, x in v.items()}
+        elif k == "items": out[k] = _json_schema(v)
+        elif k in ("enum", "required"): out[k] = v
+    return {"anyOf": [out, {"type": "null"}]} if s.get("nullable") else out
+
+
+def call_cohere(purpose, model, text, system=None, schema=None, image=None, temperature=0.1, json_out=True):
+    """One Cohere Chat v2 call; returns the reply text. A schema makes the reply follow it exactly."""
+    content = text if image is None else [
+        {"type": "image_url", "image_url": {"url": f"data:{image[1]};base64,{base64.b64encode(image[0]).decode()}"}},
+        {"type": "text", "text": text}]
+    body = {"model": model, "temperature": temperature,
+            "messages": ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": content}]}
+    if json_out:
+        body["response_format"] = {"type": "json_object", **({"schema": _json_schema(schema)} if schema else {})}
+    r = _post_logged(purpose, model, COHERE_URL, body, headers={"Authorization": f"Bearer {COHERE_KEY}"})
+    if r.status_code != 200:
+        raise RuntimeError(f"{r.status_code}: {r.text[:200]}")
+    return _reply_text(model, r.json())
+
+
+def _intent_text(query, history=None, previous=None):
+    if previous:
+        return _compact_previous(previous) + query
+    if history:
+        return "Earlier in this search session: " + " | ".join(history[-3:]) + "\nNow the shopper says: " + query
+    return query
+
+
+def call_intent(api_key, model, query, history=None, previous=None):
+    """The intent agent on one model, Gemini or the Cohere backup; returns the parsed JSON."""
+    if is_cohere(model):
+        text = _intent_text(query, history, previous)
+        try:
+            return json.loads(call_cohere("search intent", model, text, SYSTEM, RESPONSE_SCHEMA))
+        except RuntimeError as e:
+            if not str(e).startswith("400"): raise
+            # schema refused: the prompt alone, still as JSON (the validator checks every value either way)
+            return json.loads(call_cohere("search intent (retry without schema)", model, text, SYSTEM))
+    return call_gemini(api_key, model, query, history, previous)
+
+
 def call_gemini(api_key, model, query, history=None, previous=None, use_schema=True):
     """One Gemini call with the strict response schema. The model's own thinking stays on (quality over speed);
     if a model rejects the schema, retry once with the prompt alone."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    text = query
-    if previous:
-        text = _compact_previous(previous) + query
-    elif history:
-        text = "Earlier in this search session: " + " | ".join(history[-3:]) + "\nNow the shopper says: " + query
+    text = _intent_text(query, history, previous)
     gen = {"responseMimeType": "application/json", "temperature": 0.1}
     if use_schema:
         gen["responseSchema"] = RESPONSE_SCHEMA
@@ -610,19 +695,20 @@ def understand(query, api_key, models, history=None, previous=None):
     """Run the intent agent with model fallback, then validate; returns (intent, model_used, log)."""
     log = []
     out, used = None, "offline rules"
-    if api_key:
+    models = with_backup(models, api_key)
+    if models:
         for model in model_order(models):
             t0 = time.time()
             try:
-                out = call_gemini(api_key, model, query, history, previous)
+                out = call_intent(api_key, model, query, history, previous)
                 log.append(f"{model}: ok in {time.time()-t0:.1f}s")
                 used = model
                 break
             except Exception as e:
                 log.append(f"{model}: {str(e)[:90]}")
     else:
-        log.append("No GEMINI_API_KEY set")
-    if out is None and api_key:   # every model failed: the caller falls back to normal search (safety net)
+        log.append("No GEMINI_API_KEY or COHERE_API_KEY set")
+    if out is None and models:   # every model failed: the caller falls back to normal search (safety net)
         return None, "failed", log
     if out is None:               # no key at all (local development): crude offline rules
         out = rule_parse(query, history)
@@ -1023,19 +1109,24 @@ LABEL_PROMPT = build_label_prompt(ALLOWED["types"])
 def read_image(image_bytes, mime, api_key, models):
     """Read a size tag, bill or product label with Gemini vision. Returns (data, model, log); data is None on failure."""
     log = []
-    if not api_key:
-        return None, None, ["Reading photos needs AI mode (GEMINI_API_KEY)"]
+    if not ai_available(api_key):
+        return None, None, ["Reading photos needs AI mode (GEMINI_API_KEY or COHERE_API_KEY)"]
     body = {"contents": [{"role": "user", "parts": [
                 {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_bytes).decode()}},
                 {"text": LABEL_PROMPT}]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1}}
+    # the Cohere backup reads photos with its vision model
+    models = [m for m in with_backup(models, api_key) if not is_cohere(m)] + ([COHERE_VISION] if COHERE_KEY else [])
     for model in model_order(models):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         try:
-            r = _post_logged("read photo", model, url, body)
-            if r.status_code != 200:
-                raise RuntimeError(f"{r.status_code}: {r.text[:150]}")
-            d = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+            if is_cohere(model):
+                d = json.loads(call_cohere("read photo", model, LABEL_PROMPT, image=(image_bytes, mime)))
+            else:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                r = _post_logged("read photo", model, url, body)
+                if r.status_code != 200:
+                    raise RuntimeError(f"{r.status_code}: {r.text[:150]}")
+                d = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
             size = str(d.get("size") or "").upper().strip()
             d["size"] = size if size in SIZE_ORDER else None
             waist = re.sub(r"\D", "", str(d.get("waist") or ""))
@@ -1090,15 +1181,17 @@ def _answer_offline(p, q):
 
 def ask_product(p, question, api_key, models):
     """Answer a shopper's question about one product from its listing and reviews only. Returns (answer, source)."""
-    if not api_key:
+    if not ai_available(api_key):
         return _answer_offline(p, question), "listing (offline rules)"
     prompt = ("You answer a shopper's question about ONE product on an Indian fashion store. Use only the product data below "
               "(listing details, fit signal and review notes). If the data doesn't answer it, say so in one sentence and suggest "
               "what the shopper could check; never invent facts, measurements, policies or delivery dates. Reply in at most "
               "2 short sentences, in the shopper's language.\n\nProduct data: " + json.dumps(_product_facts(p), ensure_ascii=False)
               + "\n\nShopper's question: " + question)
-    for model in model_order(models):
+    for model in model_order(with_backup(models, api_key)):
         try:
+            if is_cohere(model):
+                return call_cohere("product question", model, prompt, temperature=0.2, json_out=False).strip(), model
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             r = _post_logged("product question", model, url, {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                                                                "generationConfig": {"temperature": 0.2}})

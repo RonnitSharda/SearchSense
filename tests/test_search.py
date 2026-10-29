@@ -4,6 +4,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import numpy as np
 import agent as A
+A.COHERE_KEY = None   # tests never call a real model, even where COHERE_API_KEY is set
 from catalog import PRODUCTS, CATALOG_SOURCE
 
 
@@ -151,6 +152,39 @@ def test_vectorised_search_matches_reference():
         assert (soft == np.array([r and all(c[1] is not False for c in A.check_soft(p, s)) for r, p in zip(ref, A._PL)])).all(), s
 
 
+def test_cohere_is_the_backup():
+    # every Gemini model refused (429) -> the same prompt and schema go to Cohere, and the admin log shows it
+    import json as _json
+    reply = {"query_type": "product_search", "stage": 1, "interpretation": "Blue kurta", "hard": {"category": "fashion", "types": ["kurta"]},
+             "soft": {"colours": ["blue"]}, "mappings": [], "clarify": None}
+    sent = []
+    class R:
+        def __init__(self, code, j): self.status_code, self._j, self.text = code, j, _json.dumps(j)
+        def json(self): return self._j
+    def fake_post(url, json=None, headers=None, timeout=None):
+        sent.append((url, json, headers))
+        if "googleapis" in url: return R(429, {"error": {"message": "quota"}})
+        return R(200, {"message": {"content": [{"type": "text", "text": _json.dumps(reply)}]}, "usage": {"tokens": {"input_tokens": 900, "output_tokens": 80}}})
+    real, key = A.requests.post, A.COHERE_KEY
+    A.requests.post, A.COHERE_KEY = fake_post, "test-key"
+    try:
+        A._LAST_OK[0] = None; A._DOWN_UNTIL.clear()
+        intent, model, log = A.understand("blue kurta", "key", ["gemini-x"])
+        assert model == A.COHERE_MODELS[0] and intent["soft"]["colours"] == ["blue"], log
+        url, body, headers = sent[-1]
+        assert url == A.COHERE_URL and headers["Authorization"] == "Bearer test-key" and body["messages"][0]["content"] == A.SYSTEM
+        schema = body["response_format"]["schema"]
+        assert schema["properties"]["reply"] == {"anyOf": [{"type": "string"}, {"type": "null"}]}   # nullable, in JSON Schema terms
+        assert "nullable" not in _json.dumps(schema) and "STRING" not in _json.dumps(schema)
+        assert A.CALL_LOG[-1]["model"] == model and A.CALL_LOG[-1]["prompt_tokens"] == 900 and A.CALL_LOG[-1]["system_prompt"]
+        assert A.model_order(A.with_backup(["gemini-x"], "key"))[0] == A.COHERE_MODELS[0]   # Gemini is cooling down
+        A._DOWN_UNTIL.clear()
+        assert A.model_order(A.with_backup(["gemini-x"], "key"))[0] == "gemini-x"           # and leads again once it's back
+        assert A.with_backup(["gemini-x"], None) == A.COHERE_MODELS                          # Cohere alone also works
+    finally:
+        A.requests.post, A.COHERE_KEY = real, key; A._DOWN_UNTIL.clear(); A._LAST_OK[0] = None
+
+
 def test_weather_comes_from_the_ai():
     # weather is the AI's own estimate for the place and month (no lookup table), and which fabrics suit it is the AI's call
     # too: code never adds fabrics, it only ranks warm layers first when it's cold and keeps a named product with a tip
@@ -183,7 +217,7 @@ def test_slow_model_falls_back():
     class R:
         status_code, text = 200, ""
         def json(self): return {"candidates": [{"content": {"parts": [{"text": _json.dumps(reply)}]}}]}
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(url, json=None, headers=None, timeout=None):
         calls.append(url.split("/models/")[1].split(":")[0])
         assert timeout == A.TIMEOUT
         if "slow-model" in url: raise _rq.Timeout("read timed out")
