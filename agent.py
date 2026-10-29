@@ -1,5 +1,5 @@
 """SearchSense agent: router, Gemini intent agent, tools, verifier, fit layer."""
-import json, re, time, difflib, zlib, collections
+import json, re, time, difflib, zlib, collections, threading
 import numpy as np
 import requests
 from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
@@ -214,12 +214,31 @@ def _compact_previous(prev):
 # Every Gemini call, newest last, for the admin tab: model, HTTP result, seconds and token counts (thinking included).
 # Kept in memory for this server process, shared by all visitors; it resets when the app restarts.
 CALL_LOG = collections.deque(maxlen=500)
+_CTX = threading.local()   # each visitor's script runs in its own thread, so the tag links calls to that visitor's search
 
 
-def _log_call(purpose, model, t0, r=None, err=None):
-    d = dict(at=time.time(), purpose=purpose, model=model, secs=round(time.time() - t0, 2))
+def set_log_tag(tag):
+    """Calls made from now on (in this thread) are tagged with this search id; None for calls outside a search."""
+    _CTX.tag = tag
+
+
+def _request_text(body):
+    """What we sent, as readable text (photos replaced by a placeholder)."""
+    out = []
+    for c in body.get("contents") or []:
+        for part in c.get("parts") or []:
+            if "text" in part: out.append(part["text"])
+            elif "inline_data" in part:
+                out.append(f"[photo: {part['inline_data'].get('mime_type')}, {len(part['inline_data'].get('data', '')) * 3 // 4 // 1024} KB]")
+    return "\n".join(out)
+
+
+def _log_call(purpose, model, t0, r=None, err=None, body=None):
+    d = dict(at=time.time(), purpose=purpose, model=model, secs=round(time.time() - t0, 2), tag=getattr(_CTX, "tag", None),
+             request=_request_text(body or {}), system_prompt=bool((body or {}).get("systemInstruction")),
+             schema=bool(((body or {}).get("generationConfig") or {}).get("responseSchema")))
     if r is None:
-        d.update(status="no response", note=str(err)[:200])
+        d.update(status="no response", note=str(err)[:200], reply=str(err))
     else:
         try:
             j = r.json()
@@ -230,6 +249,10 @@ def _log_call(purpose, model, t0, r=None, err=None):
                  thinking_tokens=u.get("thoughtsTokenCount"), output_tokens=u.get("candidatesTokenCount"))
         if r.status_code != 200:
             d["note"] = str((j.get("error") or {}).get("message") or r.text)[:200]
+        try:
+            d["reply"] = j["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            d["reply"] = r.text[:20000]   # error body, or an answer without text
     CALL_LOG.append(d)
 
 
@@ -238,9 +261,9 @@ def _post_logged(purpose, model, url, body):
     try:
         r = requests.post(url, json=body)   # no time limit
     except Exception as e:
-        _log_call(purpose, model, t0, err=e)
+        _log_call(purpose, model, t0, err=e, body=body)
         raise
-    _log_call(purpose, model, t0, r)
+    _log_call(purpose, model, t0, r, body=body)
     return r
 
 

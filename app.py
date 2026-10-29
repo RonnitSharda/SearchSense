@@ -217,6 +217,8 @@ def resolve_followup(q):
 
 def run_search(q, followup=False, exact=False):
     t0 = time.time()
+    S.search_seq = S.get("search_seq", 0) + 1
+    A.set_log_tag(f"{S.sid}-{S.search_seq}")   # Gemini calls made during this search carry this id (admin tab)
     S.removed_chips = []
     q_in = resolve_followup(q) if followup else q
     r = A.route(q_in if followup else q, ai=bool(API_KEY))
@@ -325,9 +327,19 @@ def record_search(res):
                                       stage=res["route"]["stage"] if res["route"]["stage"] != "agent" else res.get("intent", {}).get("stage"),
                                       clarify=bool(res.get("intent", {}).get("stage") == 4 and res.get("intent", {}).get("clarify")),
                                       conf=res.get("intent", {}).get("confidence")))
-    _search_log().append(dict(at=time.time(), sid=S.sid, profile=S.active_profile, q=res["query"], kind=res["kind"],
-                              stage=S.metrics["searches"][-1]["stage"], t=res["t"], t_ai=res.get("t_ai"), n=n, model=res.get("model"),
-                              cached=any(l == "served from cache" for l in res.get("ai_log") or []), fallback=bool(res.get("fallback"))))
+    items = [(p, checks) for p, checks in res["items"]] if res["kind"] == "agent" else [(PRODUCTS[i], []) for i in res.get("items") or []]
+    _search_log().append(dict(
+        at=time.time(), sid=S.sid, tag=f"{S.sid}-{S.search_seq}", profile=S.active_profile, q=res["query"], kind=res["kind"],
+        stage=S.metrics["searches"][-1]["stage"], t=res["t"], t_ai=res.get("t_ai"), n=n, model=res.get("model"),
+        cached=any(l == "served from cache" for l in res.get("ai_log") or []), fallback=bool(res.get("fallback")),
+        # the full record behind "View full log" in the admin tab
+        route={k: res["route"].get(k) for k in ("label", "reason", "query", "fixes")}, steps=list(res.get("steps") or []),
+        ai_log=list(res.get("ai_log") or []), intent=json.loads(json.dumps(res.get("intent") or {}, default=str)),
+        relaxed=[f"{k}: {v}" for k, v in res.get("relaxed") or []],
+        results=[dict(brand=p["brand"], name=p["name"], type=p["type"], colour=p["colour"], fabric=p["fabric"], price=p["price"],
+                      checks=" ".join(("✓ " if ok else "✕ " if ok is False else "? ") + nm for nm, ok, _ in checks))
+                 for p, checks in items]))
+    A.set_log_tag(None)
     if res["kind"] == "agent" and (res.get("intent", {}).get("soft", {}).get("fabrics")):
         S.metrics["flagged"].update(p["id"] for p, _ in res["items"] if not p["fabric"])   # catalog gap: fabric not stated
 
@@ -766,6 +778,92 @@ def _admin_login():
             st.error("Wrong ID or password.")
 
 
+def _pretty(txt):
+    """Gemini's reply as indented JSON when it is JSON, else as sent."""
+    try:
+        return json.dumps(json.loads(txt), indent=2, ensure_ascii=False), "json"
+    except Exception:
+        return txt or "", "text"
+
+
+def _show_call(c, n=None):
+    head = f"{'Call ' + str(n) + ' · ' if n else ''}{_clock(c['at'])} · {c['purpose']} · **{c['model']}** · " \
+           + ("✅ OK" if c["status"] == 200 else f"❌ {c['status']}") + f" · {c['secs']}s"
+    st.markdown(head)
+    if c.get("prompt_tokens") is not None:
+        st.caption(f"Tokens: prompt {c.get('prompt_tokens')} (cached {c.get('cached_tokens') or 0}) · thinking "
+                   f"{c.get('thinking_tokens') or 0} · reply {c.get('output_tokens')}")
+    sent = c.get("request", "")
+    extras = [x for x, on in (("the system prompt (master prompt)", c.get("system_prompt")),
+                              ("the strict JSON response schema", c.get("schema"))) if on]
+    st.markdown("**Sent to Gemini**" + (f" · together with {' and '.join(extras)}" if extras else ""))
+    st.code(sent or "(nothing recorded)", language="text", wrap_lines=True)
+    st.markdown("**Gemini replied**" if c["status"] == 200 else "**Error from Google**")
+    body, lang = _pretty(c.get("reply", ""))
+    st.code(body or "(empty)", language=lang, wrap_lines=True)
+
+
+@st.dialog("Full log of this search", width="large")
+def _search_detail(x):
+    st.markdown(f"### “{html.escape(x['q'])}”")
+    path = {"agent": "AI", "keyword": "normal search", "help": "customer care"}.get(x["kind"], x["kind"])
+    st.caption(f"{_clock(x['at'])} IST · visitor {x['sid']} · profile {x['profile']} · path {path}"
+               + (" (safety net)" if x["fallback"] else "") + f" · stage {x['stage']} · {x['n']} results")
+    c = st.columns(3)
+    c[0].metric("Total", f"{x['t']:.2f}s"); c[1].metric("Waiting for AI", f"{x['t_ai'] or 0:.2f}s")
+    c[2].metric("App work", f"{x['t'] - (x['t_ai'] or 0):.2f}s")
+
+    st.markdown("#### 1 · Router")
+    r = x.get("route") or {}
+    st.markdown(f"**{html.escape(str(r.get('label')))}** · {html.escape(str(r.get('reason')))}"
+                + (f"  \nSpelling fixes: {', '.join(f'{a} → {b}' for a, b in r['fixes'])}" if r.get("fixes") else ""))
+
+    st.markdown("#### 2 · Gemini")
+    calls = [cl for cl in A.CALL_LOG if cl.get("tag") == x.get("tag")]
+    if x["cached"]:
+        st.info("Served from cache: the same search was answered before, so Gemini was not called. The answer below is the saved one.")
+    elif not calls and x["kind"] == "keyword" and not x["fallback"]:
+        st.info("No AI call: a short, specific query goes straight to normal search.")
+    elif not calls and x["kind"] == "help" and not x.get("intent"):
+        st.info("No AI call: the router recognised an order or returns question and sent it straight to Customer Care.")
+    elif not calls:
+        st.info("No Gemini call recorded" + ("" if API_KEY else " (no GEMINI_API_KEY: offline rules were used)") + ".")
+    for i, cl in enumerate(calls, 1):
+        with st.container(border=True):
+            _show_call(cl, i)
+    if x.get("ai_log"):
+        st.caption("Agent log: " + " · ".join(x["ai_log"]))
+
+    if x.get("intent"):
+        st.markdown("#### 3 · What the AI understood (after the validator)")
+        st.json(x["intent"], expanded=True)
+
+    st.markdown("#### 4 · Every step")
+    for i, (a, b, o) in enumerate(x.get("steps") or [], 1):   # full text, wrapped: outputs can be long (e.g. Google errors)
+        st.markdown(f"{i}. **{html.escape(str(a))}** · `{html.escape(str(b))}`  \n{html.escape(str(o))}")
+    if x.get("relaxed"):
+        st.markdown("Relaxed to find results: " + ", ".join(x["relaxed"]))
+
+    st.markdown(f"#### 5 · Results shown ({len(x.get('results') or [])})")
+    if x.get("results"):
+        st.dataframe([{"#": i + 1, "Brand": p["brand"], "Product": p["name"], "Type": p["type"], "Colour": p["colour"],
+                       "Fabric": p["fabric"], "₹": p["price"], "Checks": p["checks"]} for i, p in enumerate(x["results"])],
+                     hide_index=True, use_container_width=True)
+    elif x["kind"] == "help":
+        st.markdown("No products: the shopper was sent to Customer Care. Reply: "
+                    + html.escape(str((x.get("intent") or {}).get("reply") or "redirect to help chat")))
+    st.download_button("⬇️ Download this log (JSON)", json.dumps(dict(x, gemini_calls=calls), indent=2, ensure_ascii=False, default=str),
+                       file_name=f"searchsense-log-{x.get('tag')}.json", mime="application/json")
+
+
+@st.dialog("Gemini call", width="large")
+def _call_detail(c):
+    _show_call(c)
+    if c.get("system_prompt"):
+        with st.expander("System prompt (master prompt) sent with this call"):
+            st.code(A.SYSTEM, language="text", wrap_lines=True)
+
+
 def _admin_clear():
     A.CALL_LOG.clear(); _search_log().clear()
 
@@ -813,27 +911,36 @@ def view_admin():
 
     st.markdown('<div class="layer">Gemini calls · newest first</div>', unsafe_allow_html=True)
     if calls:
-        st.dataframe([{"Time": _clock(c["at"]), "Purpose": c["purpose"], "Model": c["model"],
+        ev = st.dataframe([{"Time": _clock(c["at"]), "Purpose": c["purpose"], "Model": c["model"],
                        "Result": "OK" if c["status"] == 200 else f"✕ {c['status']}", "Seconds": c["secs"],
                        "Prompt tokens": c.get("prompt_tokens"), "Cached tokens": c.get("cached_tokens"),
                        "Thinking tokens": c.get("thinking_tokens"), "Output tokens": c.get("output_tokens"),
-                       "Error": c.get("note", "")} for c in reversed(calls)], hide_index=True, use_container_width=True)
-        st.caption("Seconds is Google's response time. Thinking tokens are the model's hidden reasoning: more thinking, slower answer.")
+                       "Error": c.get("note", "")} for c in reversed(calls)], hide_index=True, use_container_width=True,
+                          on_select="rerun", selection_mode="single-row", key="adm_calls")
+        st.caption("Seconds is Google's response time. Thinking tokens are the model's hidden reasoning: more thinking, slower answer. "
+                   "Tick a row, then open it to see exactly what was sent and what Gemini replied.")
+        pick = ev.selection.rows
+        if st.button("🔍 View this call (sent + reply)", disabled=not pick, key="adm_call_btn"):
+            _call_detail(list(reversed(calls))[pick[0]])
     else:
         st.info("No Gemini calls yet. " + ("Run an AI search (a full sentence) and refresh." if API_KEY else
                                          "There is no GEMINI_API_KEY, so the app is using offline rules."))
 
     st.markdown('<div class="layer">Searches · all visitors, newest first</div>', unsafe_allow_html=True)
     if searches:
-        st.dataframe([{"Time": _clock(x["at"]), "Visitor": x["sid"], "Profile": x["profile"], "Query": x["q"],
+        ev = st.dataframe([{"Time": _clock(x["at"]), "Visitor": x["sid"], "Profile": x["profile"], "Query": x["q"],
                        "Path": {"agent": "AI", "keyword": "normal", "help": "customer care"}.get(x["kind"], x["kind"])
                                + (" (safety net)" if x["fallback"] else "") + (" · cached" if x["cached"] else ""),
                        "Stage": x["stage"], "Results": x["n"], "Total (s)": round(x["t"], 2),
                        "AI wait (s)": round(x["t_ai"], 2) if x["t_ai"] is not None else None,
                        "App work (s)": round(x["t"] - (x["t_ai"] or 0), 2), "Model": x["model"] or ""}
-                      for x in reversed(searches)], hide_index=True, use_container_width=True)
+                      for x in reversed(searches)], hide_index=True, use_container_width=True,
+                          on_select="rerun", selection_mode="single-row", key="adm_searches")
         st.caption("AI wait = time spent waiting for Gemini (all models tried). App work = everything else: routing, searching "
-                   "5,000+ products, size checks.")
+                   "5,000+ products, size checks. Tick a row, then open its full log.")
+        pick = ev.selection.rows
+        if st.button("🔍 View full log of this search", type="primary", disabled=not pick, key="adm_search_btn"):
+            _search_detail(list(reversed(searches))[pick[0]])
     else:
         st.info("No searches yet.")
 
