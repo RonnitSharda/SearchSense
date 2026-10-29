@@ -99,9 +99,8 @@ def test_validator_repairs_model_output():
 def test_gym_finds_quick_dry_tees():
     it = A.validate_intent({"query_type": "product_search", "stage": 3, "interpretation": "gym tee",
                             "hard": {"category": "fashion", "gender": "men", "types": ["t-shirt"]},
-                            "soft": {"occasion": "sports", "fabrics": [], "fabric_named": False}})[0]
-    it, _ = A.enrich(it)
-    assert {"polyester", "quick-dry"} <= set(it["soft"]["fabrics"])   # added by the occasion rule
+                            "soft": {"occasion": "sports", "fabrics": ["polyester", "nylon", "quick-dry"], "fabric_named": False}})[0]
+    it, _ = A.enrich(it)   # the AI chose the fabrics; code keeps them as they are
     items = [p for p, _ in A.search(it, max_results=8)[0]]
     assert items and all(p["gender"] in ("men", "unisex") and "sports" in p["occasions"] for p in items)
     assert items[0]["fabric"] in ("quick-dry", "polyester", "nylon")   # stated performance fabric ranks first
@@ -152,26 +151,24 @@ def test_vectorised_search_matches_reference():
 
 
 def test_weather_comes_from_the_ai():
-    # weather is the AI's own estimate for the place and month (no lookup table): cold -> warm fabrics and warm layers first,
-    # hot -> breathable; a named product is kept ("t-shirts for Manali") with a warm-layer tip; no place -> no weather
+    # weather is the AI's own estimate for the place and month (no lookup table), and which fabrics suit it is the AI's call
+    # too: code never adds fabrics, it only ranks warm layers first when it's cold and keeps a named product with a tip
     assert "don't guess the climate" not in A.SYSTEM and "weather" in A.RESPONSE_SCHEMA["properties"]["soft"]["properties"]
+    assert "you decide whether the request calls for particular fabrics" in A.SYSTEM and "fabrics wool, fleece" not in A.SYSTEM
     assert A.correct_tokens("I want clothes for my Manali trip in January")[1] == []   # everyday words and places are not "fixed"
-    def intent(types, weather, city="manali"):
+    def intent(types, weather, fabrics=(), city="manali"):
         it = A.validate_intent({"query_type": "product_search", "stage": 3, "hard": {"category": "fashion", "types": types},
-                                "soft": {"city": city, "month": "jan", "weather": weather, "fabrics": [], "fabric_named": False}})[0]
+                                "soft": {"city": city, "month": "jan", "weather": weather, "fabrics": list(fabrics), "fabric_named": False}})[0]
         return A.enrich(it)
-    cold, calls = intent([], {"climate": "COLD", "temp_c": "4", "note": "freezing nights"})
-    assert cold["soft"]["month"] == "january" and cold["soft"]["weather"]["temp_c"] == 4
-    assert {"wool", "fleece"} <= set(cold["soft"]["fabrics"]) and "linen" not in cold["soft"]["fabrics"]
+    cold, calls = intent([], {"climate": "COLD", "temp_c": "4", "note": "freezing nights"}, fabrics=["wool", "fleece"])
+    assert cold["soft"]["month"] == "january" and cold["soft"]["weather"]["temp_c"] == 4 and cold["soft"]["fabrics"] == ["wool", "fleece"]
     assert any("about 4°C" in out for _, _, out in calls)
     top = [p["type"] for p, _ in A.search(cold, max_results=8)[0]]
     assert top and all(t in ("jacket", "sweater", "sweatshirt", "blazer") for t in top[:4]), top
     tees, _ = intent(["t-shirt"], {"climate": "cold", "temp_c": 8, "note": "cold"})
     assert tees["soft"].get("layer_tip") and all(p["type"] == "t-shirt" for p, _ in A.search(tees)[0])
-    hot, _ = intent([], {"climate": "hot", "temp_c": 34, "note": "hot and dry"}, city="jaipur")
-    assert "linen" in hot["soft"]["fabrics"] and not hot["soft"].get("prefer_types")
-    warm, _ = intent([], {"climate": "warm", "temp_c": 32, "note": "warm daytime weather"}, city="jaipur")   # Jaipur in October
-    assert {"cotton", "linen"} <= set(warm["soft"]["fabrics"])
+    warm, _ = intent([], {"climate": "warm", "temp_c": 32, "note": "warm daytime weather"}, city="jaipur")
+    assert warm["soft"]["fabrics"] == [] and not warm["soft"].get("prefer_types")   # no fabric chosen by the AI -> none added
     none, calls = intent([], {"climate": "snowy"})   # an invalid estimate is dropped, not trusted
     assert none["soft"]["weather"] is None and none["soft"]["fabrics"] == [] and calls[0][2] == "not estimated"
 

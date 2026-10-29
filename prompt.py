@@ -38,10 +38,8 @@ VOCAB_RULES = [
      "estimate for that place and month, which decides warm layers or breathable fabrics"),
     ("in January, Jan, this December, during Diwali month", "month (lowercase full name). 'winter' / 'summer' alone: use the fabric rows below"),
     ("gym, running, jogging, workout, training, yoga, sports, cycling",
-     "occasion sports; fabrics polyester, nylon, quick-dry (inferred: cotton holds sweat). 'quick-dry' is the catalog's value for "
-     "performance fabrics sold by technology name (dri-fit, rapid-dry). Track pants / joggers -> type trousers"),
-    ("breathable, summer, hot, humid, sweaty, light fabric", "fabrics cotton, linen, chanderi, mul cotton, khadi, cotton-silk, rayon (inferred)"),
-    ("winter, cold, cosy (clothes), warm (clothes)", "fabrics wool, fleece, velvet (inferred)"),
+     "occasion sports. 'quick-dry' is the catalog's value for performance fabrics sold by technology name (dri-fit, rapid-dry). "
+     "Track pants / joggers -> type trousers"),
     ("loose, relaxed, baggy, oversized, wide-leg, comfy, not tight", "fit relaxed"),
     ("slim, skinny, fitted, tight, bodycon", "fit slim"),
     ("regular fit, straight fit, classic fit", "fit regular"),
@@ -270,12 +268,13 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
     {this_month}, the current month), from your own knowledge: {{"climate": one of cold / cool / mild / warm / hot / humid,
     "temp_c": typical daytime temperature as a whole number, "note": a few words, e.g. "cold, freezing nights"}}. The month
     matters: Jaipur or Delhi are cold in December-February and hot in May; Manali and Leh are cold most of the year;
-    Mumbai is humid. null when no place is mentioned. Use it for fabrics too: cold -> wool, fleece, velvet (inferred);
-    warm, hot or humid -> breathable fabrics (inferred). If the shopper named a product ("t-shirts for Manali"), keep that type.
+    Mumbai is humid. null when no place is mentioned. If the shopper named a product ("t-shirts for Manali"), keep that type.
   - colour_family: subset of {allowed['colour_family']} for vague colour words.
   - colours: specific colours the shopper named (e.g. "lilac", "navy", "mustard"), lowercase. Known colour words: {', '.join(colour_words)}.
     If the shopper names a specific colour, put it here and leave colour_family empty.
-  - fabrics: fabrics / materials from the list above.
+  - fabrics: you decide whether the request calls for particular fabrics: because of the weather (your estimate above), the
+    activity, the occasion, or words like "breathable", "cosy" or "light". If it does, list the ones from the catalog's fabric
+    list that genuinely suit it (fabric_named false). If fabric doesn't matter for this request, leave it empty.
   - fabric_named: true if the shopper literally named the fabric ("linen shirt"), false if you inferred fabrics from words like
     "breathable" or "winter". Named fabrics are strict; inferred ones also allow listings with no stated fabric.
   - fit: {allowed['fit']} when the shopper describes the cut ("loose jeans", "something less tight" -> relaxed;

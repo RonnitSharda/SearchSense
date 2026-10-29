@@ -642,12 +642,8 @@ def enrich(intent):
                       f"{w['note'] or w['climate']}{temp} in {when}" if w else "not estimated"))
     soft["climate"] = w["climate"] if w else None
     clothes = intent.get("hard", {}).get("category") in (None, "fashion")
-    hot = w and (w["climate"] in ("warm", "hot", "humid") or (w.get("temp_c") or 0) >= 27)   # 27°C+ calls for light fabrics
-    if hot and not soft.get("fabric_named"):
-        soft["fabrics"] = sorted(set(soft.get("fabrics") or []) - WARM | BREATHABLE)
+    # which fabrics suit the weather is the AI's call (soft.fabrics); code only ranks warm layers first when it's cold
     if w and w["climate"] in ("cold", "cool") and clothes:
-        if not soft.get("fabric_named"):   # warm fabrics replace any 'breathable' guess
-            soft["fabrics"] = sorted(set(soft.get("fabrics") or []) - BREATHABLE | WARM)
         types = intent.get("hard", {}).get("types") or []
         if not types:   # no product named: warm layers rank first, nothing is filtered out
             soft["prefer_types"] = WARM_LAYERS
@@ -658,8 +654,6 @@ def enrich(intent):
         calls.append(("occasion_rules", f"{soft.get('occasion')}, {soft.get('time') or 'day'}", occ["tip"] if occ else "no rule"))
     if occ:
         soft["prefer_colour_family"] = occ["colour_family"]
-        if occ.get("fabrics") and not soft.get("fabric_named"):   # e.g. gym -> quick-dry synthetics, unless a fabric was named
-            soft["fabrics"] = sorted(set(soft.get("fabrics") or []) | set(occ["fabrics"]))
     return intent, calls
 
 
