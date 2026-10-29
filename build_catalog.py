@@ -12,6 +12,7 @@ The raw data has NO ratings, sizes, MRP/discount, colour or fabric. What this sc
   * sizes and fit_signal / fit_reviews are SIMULATED (deterministic per product) and flagged fit_sim=1.
     They exist so the fit agent has something to reason about. They are not real shopper data.
   * rating and MRP are left empty rather than invented.
+  * listings without a working photo are dropped.
 Standard library only, so it runs anywhere the app does.
 """
 import csv, gzip, hashlib, re, sys, collections
@@ -21,6 +22,8 @@ RAW = "data/myntra_fashion_products.csv.gz"
 OUT = "data/myntra_catalog.csv.gz"
 MAX_PER_TYPE = 700          # keep the catalog balanced; the biggest types (shirts, kurtas) are capped
 MAX_PER_BRAND_TYPE = 60     # stop one brand flooding a type
+# listings whose photo link is dead on Myntra's image server (404 when every link was checked), dropped like those with no photo
+DEAD_IMAGES = {"Y1000353", "Y10004115", "Y10004117", "Y10004119", "Y10004149", "Y10004169"}
 
 # --------------------------------------------------------------------------- types
 # (regex on lowercased title, type, category, style). First match wins; order matters.
@@ -339,6 +342,9 @@ def build(raw=RAW, out=OUT):
         if per_type[d["type"]] >= MAX_PER_TYPE or per_bt[(d["brand"], d["type"])] >= MAX_PER_BRAND_TYPE:
             stats["dropped: balancing cap"] += 1; continue
         per_type[d["type"]] += 1; per_bt[(d["brand"], d["type"])] += 1; kept.append(d)
+    # every listing shown has a real photo
+    stats["dropped: no photo or dead photo link"] = sum(not d["image"] or d["id"] in DEAD_IMAGES for d in kept)
+    kept = [d for d in kept if d["image"] and d["id"] not in DEAD_IMAGES]
     kept.sort(key=lambda d: d["id"])
     with gzip.open(out, "wt", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)

@@ -36,25 +36,25 @@ model rejects the schema, and `validate_intent` repairs or drops anything the se
 trace). If every model fails, the original query runs on normal search (the safety net in the solution doc).
 
 ## What is real and what is simulated
-The catalog is **24 hand-written demo products** (so the scripted scenarios stay reliable) plus **about 5,200 real Myntra listings** (`data/myntra_catalog.csv.gz`).
+The catalog is **5,236 real Myntra listings** (`data/myntra_catalog.csv.gz`), every one with a working product photo. The 24 hand-written demo products (no photos) are no longer shown; they only stand in if the data file is missing.
 
 | | Source |
 |---|---|
 | Real, from the dataset | product title, brand, price (INR), gender, first product image URL |
 | Derived by keyword rules (approximate) | type, style (ethnic/western), colour and colour family, fabric, occasions, time of day, silver/gold pairing, a few notes taken from the description |
 | **Simulated** | sizes available, `fit_signal` (runs small / true / large) and the number of fit reviews |
-| Not in the data, so left empty | ratings, MRP / discount, shopper reviews. Rated demo products rank above unrated ones. |
+| Not in the data, so left empty | ratings, MRP / discount, shopper reviews |
 
-**The fit agent's inputs are simulated.** The Kaggle data has no fit reviews or sizes, so `build_catalog.py` generates them deterministically per product (a "slim fit" title makes "runs small" more likely, and so on). The app says so in the product page, the sidebar and the agent trace. Treat the size recommendations as a demonstration of the mechanism, not of real accuracy. The 24 demo products are illustrative too: their prices, reviews and fit data are made up.
+**The fit agent's inputs are simulated.** The Kaggle data has no fit reviews or sizes, so `build_catalog.py` generates them deterministically per product (a "slim fit" title makes "runs small" more likely, and so on). The app says so in the product page, the sidebar and the agent trace. Treat the size recommendations as a demonstration of the mechanism, not of real accuracy.
 
 ## Data source
-Product listings come from the Kaggle dataset [`nirokey/myntra-fashion-products`](https://www.kaggle.com/datasets/nirokey/myntra-fashion-products) (12,491 rows; unmodified copy in `data/myntra_fashion_products.csv.gz`). Product names, brands, prices and images belong to Myntra and the respective brands. This repo is a non-commercial case-competition prototype; image files are not copied here, the app only links to the image URLs from the dataset. Check the licence shown on the Kaggle dataset page before using the data for anything beyond the demo. Kids' products, out-of-stock rows, duplicate titles, footwear, bags, jewellery and innerwear are dropped, and large types are capped so the catalog stays balanced (see `build_catalog.py`).
+Product listings come from the Kaggle dataset [`nirokey/myntra-fashion-products`](https://www.kaggle.com/datasets/nirokey/myntra-fashion-products) (12,491 rows; unmodified copy in `data/myntra_fashion_products.csv.gz`). Product names, brands, prices and images belong to Myntra and the respective brands. This repo is a non-commercial case-competition prototype; image files are not copied here, the app only links to the image URLs from the dataset. Check the licence shown on the Kaggle dataset page before using the data for anything beyond the demo. Kids' products, out-of-stock rows, duplicate titles, footwear, bags, jewellery, innerwear and listings without a working photo (6 links that return 404, listed in `DEAD_IMAGES`) are dropped, and large types are capped so the catalog stays balanced (see `build_catalog.py`).
 
 To rebuild after changing the rules (standard library only):
 ```
 python build_catalog.py             # data/myntra_fashion_products.csv.gz -> data/myntra_catalog.csv.gz
 ```
-If `data/myntra_catalog.csv.gz` is missing or unreadable, the app falls back to the 24 demo products.
+If `data/myntra_catalog.csv.gz` is missing or unreadable, the app falls back to the 24 demo products (illustrative, no photos) so it still runs.
 
 Search over the larger catalog uses numpy indices built at start-up (a query takes a few milliseconds). Results are capped at two per brand so one label does not fill the page.
 

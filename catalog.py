@@ -1,12 +1,11 @@
 """Catalog for the SearchSense MVP.
 
-* 25 hand-written demo products (illustrative: prices, reviews and fit data are made up). They keep the
-  scripted demo scenarios reliable.
 * ~5k real Myntra product listings loaded from data/myntra_catalog.csv.gz (built by build_catalog.py from the
-  Kaggle dataset nirokey/myntra-fashion-products). Title, brand, price, image URL and gender are real; type, colour,
-  fabric, style, occasion, time and pairing are derived from the title/description with keyword rules; sizes and
-  fit signals are SIMULATED (no ratings, MRP or fit reviews exist in the source data).
-If the data file is missing the app falls back to the 25 demo products only.
+  Kaggle dataset nirokey/myntra-fashion-products), each with a working product photo. Title, brand, price, image URL
+  and gender are real; type, colour, fabric, style, occasion, time and pairing are derived from the title/description
+  with keyword rules; sizes and fit signals are SIMULATED (no ratings, MRP or fit reviews exist in the source data).
+* 24 hand-written demo products (illustrative, no photos). They are NOT shown when the Myntra file loads; they are
+  the fallback catalog if the data file is missing, so the app still runs.
 """
 import csv, gzip, os
 from attributes import style_attributes
@@ -132,7 +131,7 @@ P = [
 
 for _p in P:
     _p.update(source="demo", fit_sim=True, image="", mrp=None)   # demo fit data is illustrative too
-PRODUCTS = {p["id"]: p for p in P}
+PRODUCTS = {}
 
 DATA_FILE = os.environ.get("SEARCHSENSE_CATALOG") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "myntra_catalog.csv.gz")
 
@@ -158,9 +157,11 @@ if os.path.exists(DATA_FILE):
     try:
         _rows = _load_myntra(DATA_FILE)
         PRODUCTS.update({p["id"]: p for p in _rows})
-        CATALOG_SOURCE = f"{len(P)} demo + {len(_rows):,} Myntra listings"
+        CATALOG_SOURCE = f"{len(_rows):,} Myntra listings, all with photos"
     except Exception as e:  # corrupt / partial file: never break the app
         CATALOG_SOURCE = f"demo only (could not read Myntra data: {str(e)[:60]})"
+if not PRODUCTS:   # the photo-less demo products only stand in when there is no real data
+    PRODUCTS = {p["id"]: p for p in P}
 
 # demo products: fit, print, sleeves and neckline from their name and notes (Myntra rows bring their own, see above)
 for _p in P:

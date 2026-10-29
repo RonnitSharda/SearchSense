@@ -2,7 +2,7 @@
 import json, re, time, difflib, zlib, collections, threading, datetime
 import numpy as np
 import requests
-from catalog import (PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
+from catalog import (PRODUCTS, P as DEMO_PRODUCTS, BREATHABLE, HEAVY, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS,
                      OCCASION_RULES, MONTHS, WARM, WARM_LAYERS)
 import base64
 from attributes import FITS, PATTERNS, SLEEVES, NECKS, PRINTS
@@ -11,12 +11,10 @@ from prompt import NEEDS, build_system_prompt, build_response_schema, build_labe
 # ------------------------------------------------------------------ vocabulary
 _FIELDS = ("name", "type", "colour", "fabric", "brand", "style", "colour_family", "gender")
 _TOKEN_FREQ = collections.Counter()
-_DEMO_TOKENS = set()
 for p in PRODUCTS.values():
-    toks = {w for f in _FIELDS for w in re.findall(r"[a-z]+", str(p[f]).lower())}
-    _TOKEN_FREQ.update(toks)
-    if p.get("source") == "demo":
-        _DEMO_TOKENS |= toks
+    _TOKEN_FREQ.update({w for f in _FIELDS for w in re.findall(r"[a-z]+", str(p[f]).lower())})
+# the demo products' words (anarkali, chanderi...) stay in the vocabulary even though the products aren't shown
+_DEMO_TOKENS = {w for p in DEMO_PRODUCTS for f in _FIELDS for w in re.findall(r"[a-z]+", str(p[f]).lower())}
 # words from the data must appear on >= 3 products (or be demo words), so one-off brand fragments aren't "correct" spellings
 # place names are vocabulary only (so the spell-checker leaves them alone); their weather comes from the AI
 _PLACES = set("""mumbai delhi pune jaipur chennai kolkata bengaluru bangalore hyderabad goa manali shimla leh ladakh srinagar
@@ -861,8 +859,9 @@ def _top(idx, score, k, per_brand):
     return picked + spill[:k - len(picked)]
 
 
-# weakest first (solution doc: colour shade, fabric, pairing, style words); occasion type is near-hard, so it goes last
-RELAX_ORDER = ["colours", "colour_family", "fabrics", "neck", "sleeve", "fit", "pattern", "pairs", "time", "occasion"]
+# weakest first (solution doc: colour shade, fabric, pairing, style words); occasion type is near-hard, so it goes late;
+# needs (fragrance-free, warm light) last, so a home or beauty search shows close options rather than nothing
+RELAX_ORDER = ["colours", "colour_family", "fabrics", "neck", "sleeve", "fit", "pattern", "pairs", "time", "occasion", "needs"]
 
 
 def search(intent, min_results=2, max_results=6):

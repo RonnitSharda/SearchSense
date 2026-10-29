@@ -19,7 +19,7 @@ def run(q, gender=None):
 
 def test_catalog_loaded():
     assert len(PRODUCTS) > 1000, CATALOG_SOURCE
-    assert {"F01", "M01", "L01", "C01"} <= set(PRODUCTS)          # curated demo products are kept
+    assert all(p["source"] == "myntra" and p["image"] for p in PRODUCTS.values())   # every product shown has a photo
     myntra = [p for p in PRODUCTS.values() if p["source"] == "myntra"]
     assert all(p["rating"] is None and p["mrp"] is None for p in myntra)   # nothing invented
     assert all(p["fit_sim"] for p in myntra if p["category"] == "fashion" and p["sizes"] != ["Free"])
@@ -27,19 +27,15 @@ def test_catalog_loaded():
 
 def test_scenarios():
     r, items, _ = run("wite linnen shirt M")
-    assert r["stage"] == 2 and items[0]["id"] == "M01"
+    assert r["stage"] == 2 and items[0]["type"] == "shirt" and items[0]["fabric"] == "linen" and "M" in items[0]["sizes"]
     _, items, it = run("breathable pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 that pairs with silver jewellery", "women")
-    assert {"F01", "F02", "F03", "F04"} <= {p["id"] for p in items} and all(p["price"] <= 6000 for p in items)
+    assert items and all(p["price"] <= 6000 and p["style"] == "ethnic" and p["gender"] in ("women", "unisex") for p in items)
     _, items, _ = run("high-waist straight jeans for office", "women")
-    assert items[0]["id"] == "F11" and all(p["type"] == "jeans" for p in items)
+    assert items and all(p["type"] == "jeans" for p in items)
     _, items, it = run("outfit for a wedding", "women")
     assert it["stage"] == 4 and it["clarify"] and items
     _, items, it = run("chanderi lehenga for a day wedding under ₹6,000", "women")
-    assert items[0]["id"] == "F05" and all(p["type"] == "lehenga" and p["price"] <= 6000 for p in items)
-    _, items, _ = run("minimal table lamp for a small reading corner, warm light, under 2500")
-    assert [p["id"] for p in items] == ["L01"]
-    _, items, _ = run("fragrance-free moisturiser for oily acne-prone skin that sits well under sunscreen under 800")
-    assert [p["id"] for p in items] == ["C01"]
+    assert items and all(p["type"] == "lehenga" and p["price"] <= 6000 for p in items)
     assert run("where is my order")[0]["stage"] == 6
 
 
@@ -54,7 +50,6 @@ def test_spelling_aliases():
 def test_browse():
     ids = A.browse()
     assert len(ids) == len(PRODUCTS) == len(set(ids))
-    assert sum(PRODUCTS[i]["source"] == "demo" for i in ids[:24]) <= 4      # real listings lead the home page
     assert all(PRODUCTS[i]["style"] == "ethnic" for i in A.browse("Ethnic"))
     prices = [PRODUCTS[i]["price"] for i in A.browse("Women", "kurta", "Price: low to high")]
     assert prices == sorted(prices) and prices
@@ -116,19 +111,23 @@ def test_prompt_and_schema():
     assert A.RESPONSE_SCHEMA["properties"]["query_type"]["enum"] == ["product_search", "out_of_catalog", "support", "other"]
 
 
+# women's jeans that run true to size and come in waist 30 and 32
+JEANS = next(p for p in A._PL if p["type"] == "jeans" and p["gender"] == "women" and p["fit_signal"] == 0 and {"30", "32"} <= set(p["sizes"]))
+
+
 def test_fit_uses_own_returns():
     returned_small = dict(usual_size="M", orders=[dict(size="30", outcome="returned · too small at the waist")])
-    fa = A.fit_agent(A.PRODUCTS["F12"], returned_small)              # true-to-size jeans
+    fa = A.fit_agent(JEANS, returned_small)
     assert fa["size"] == "32" and fa["confidence"] == "medium" and "returned a 30" in fa["reason"]
-    fa = A.fit_agent(A.PRODUCTS["F12"], dict(waist="30", orders=returned_small["orders"]))
+    fa = A.fit_agent(JEANS, dict(waist="30", orders=returned_small["orders"]))
     assert fa["size"] == "32"                                          # never the size they sent back as too small
-    assert A.fit_agent(A.PRODUCTS["F12"], dict(usual_size="M"))["size"] is None   # no history: no guess
+    assert A.fit_agent(JEANS, dict(usual_size="M"))["size"] is None   # no history: no guess
 
 
 def test_complete_the_look():
-    look = A.complete_look(A.PRODUCTS["F11"])                          # women's jeans
+    look = A.complete_look(JEANS)
     assert look and all(p["type"] in A.PAIRS_WITH["jeans"] and p["gender"] in ("women", "unisex") for p in look)
-    assert A.complete_look(A.PRODUCTS["L01"]) == []                   # not clothing
+    assert A.complete_look(next(p for p in A._PL if p["category"] == "lifestyle")) == []   # not clothing
 
 
 def test_vectorised_search_matches_reference():

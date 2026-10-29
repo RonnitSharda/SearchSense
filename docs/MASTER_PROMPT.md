@@ -16,8 +16,8 @@ only the allowed values below, exactly as written.
 Categories and the product types in each (use these exact strings in hard.types):
   - fashion: anarkali set, blazer, co-ord set, dress, dupatta, jacket, jeans, jumpsuit, kurta, kurta set, leggings, lehenga, nehru jacket, palazzo, salwar suit, saree, sharara set, shirt, shorts, skirt, sweater, sweatshirt, t-shirt, top, trousers
   - lifestyle: bedding, curtain, cushion cover, home decor, mug, table lamp, table linen
-  - personal care: lipstick, makeup, moisturiser, perfume, sunscreen
-Gender values: women, men, unisex. Prices are in INR. Fabrics and materials known to the catalog: acrylic, brass, brocade, ceramic, chanderi, chiffon, cotton, cotton-silk, cream, crepe, denim, fleece, gel, georgette, glass, khadi, leather, linen, mul cotton, net, nylon, polyester, quick-dry, rayon, satin, silk, velvet, wool.
+  - personal care: lipstick, makeup, moisturiser, perfume
+Gender values: women, men, unisex. Prices are in INR. Fabrics and materials known to the catalog: acrylic, brocade, ceramic, chanderi, chiffon, cotton, crepe, denim, fleece, georgette, glass, khadi, leather, linen, net, nylon, polyester, quick-dry, rayon, satin, silk, velvet, wool.
 Many listings do not state a fabric.
 NOT sold here: footwear, bags, wallets, watches, jewellery, eyewear, innerwear, kids' wear, electronics, groceries, furniture.
 
@@ -106,7 +106,7 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
     matters: Jaipur or Delhi are cold in December-February and hot in May; Manali and Leh are cold most of the year;
     Mumbai is humid. null when no place is mentioned. If the shopper named a product ("t-shirts for Manali"), keep that type.
   - colour_family: subset of ['pastel', 'bright', 'dark', 'neutral'] for vague colour words.
-  - colours: specific colours the shopper named (e.g. "lilac", "navy", "mustard"), lowercase. Known colour words: aqua, beige, black, blue, blush, brass, brown, burgundy, camel, charcoal, coffee, copper, coral, cream, emerald, fuchsia, gold, gray, green, grey, indigo, ivory, khaki, lavender, lemon, lilac, lime, magenta, mahogany, maroon, mauve, midnight, mint, mustard, navy, nude, off-white, olive, orange, peach, pink, plum, purple, red, rose, rust, sage, silver, tan, taupe, teal, turquoise, violet, white, wine, yellow.
+  - colours: specific colours the shopper named (e.g. "lilac", "navy", "mustard"), lowercase. Known colour words: aqua, beige, black, blue, blush, brown, burgundy, camel, charcoal, coffee, copper, coral, cream, fuchsia, gold, gray, green, grey, indigo, ivory, khaki, lavender, lemon, lilac, lime, magenta, mahogany, maroon, mauve, midnight, mint, mustard, navy, nude, off-white, olive, orange, peach, pink, plum, purple, red, rose, rust, silver, tan, taupe, teal, turquoise, violet, white, wine, yellow.
     If the shopper names a specific colour, put it here and leave colour_family empty.
   - fabrics: you decide whether the request calls for particular fabrics: because of the weather (your estimate above), the
     activity, the occasion, or words like "breathable", "cosy" or "light". If it does, list the ones from the catalog's fabric
