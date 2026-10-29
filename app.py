@@ -946,11 +946,16 @@ def _prerun_plan():
     return plan
 
 
-def _save_prerun():
+def _prerun_json():
     data = {"saved": datetime.datetime.now(IST).isoformat(timespec="minutes"), "models": MODELS,
             "intents": [[q, list(h), prev, list(v)] for (q, h, prev), v in _intent_cache().items()],
             "qa": [[pid, q, list(v)] for (pid, q), v in _qa_cache().items()]}
-    txt = json.dumps(data, ensure_ascii=False, default=str)
+    return json.dumps(data, ensure_ascii=False, default=str)
+
+
+def _save_prerun():
+    """Write the saved answers to data/demo_cache.json (only after a pre-run, never just by opening the page)."""
+    txt = _prerun_json()
     try:
         with open(PRERUN_FILE, "w", encoding="utf-8") as f:
             f.write(txt)
@@ -1030,7 +1035,7 @@ def _prerun_panel():
     c1, c2, _ = st.columns([1.4, 1.6, 3])
     go = c1.button("⚡ Pre-run demo", type="primary", use_container_width=True, disabled=not API_KEY,
                    help=None if API_KEY else "Needs GEMINI_API_KEY")
-    c2.download_button("⬇️ Download saved answers", S.get("prerun_json") or _save_prerun(), file_name="demo_cache.json",
+    c2.download_button("⬇️ Download saved answers", S.get("prerun_json") or _prerun_json(), file_name="demo_cache.json",
                        mime="application/json", use_container_width=True,
                        help="Commit this file as data/demo_cache.json so the answers load on every restart")
     if go:
