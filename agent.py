@@ -1130,9 +1130,13 @@ def fit_agent(p, profile):
     if p["category"] != "fashion" or p["sizes"] == ["Free"]:
         return None
     scale = _scale(p)
-    base = profile.get("anchor_size") or profile.get("usual_size")
+    brand = profile.get("anchor_brand") if profile.get("anchor_brand") != "None / not sure" else None
+    anchored = bool(brand and profile.get("anchor_size"))   # a size only counts as an anchor while its brand is set
+    base = (profile.get("anchor_size") if anchored else None) or profile.get("usual_size")
+    source = f"your {brand} {base}" if anchored else f"your usual size {base}"
     if p["sizes"][0].isdigit():
         base = profile.get("waist") or None
+        source = f"your waist {base}"
     floor, ceil, ret_note = _return_bounds(scale, profile)
     from_returns = False
     if (not base or base not in scale) and ret_note:   # no size given, but their returns say where they are
@@ -1164,8 +1168,11 @@ def fit_agent(p, profile):
         reason = f"{ret_note[0].upper()}{ret_note[1:]}, so we start from {base}; {p['fit_reviews']} reviews say it {signal}" + \
                  (f", so {rec}" if rec != base else "")
     else:
-        reason = f"{p['fit_reviews']} reviews mention fit: {signal}"
-        if rec != base: reason += f", so {('size up' if rec_idx > idx else 'size down')} from {base}"
+        reason = f"Based on {source}"
+        if offset:   # e.g. "your Uniqlo S (Uniqlo S ≈ our M)"
+            reason += f" ({brand} {base} ≈ our {scale[max(0, min(len(scale) - 1, idx + offset))]})"
+        reason += f"; {p['fit_reviews']} reviews mention fit: {signal}"
+        if adj and not clamped: reason += f", so size {'up' if adj > 0 else 'down'} to {rec}"
         if ret_note and clamped: reason += f"; {ret_note}, so {rec}"
     ask = "Which brand fits you best, and in what size?" if conf == "low" or from_returns else None
     if rec not in p["sizes"]:
