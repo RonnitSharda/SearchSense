@@ -188,6 +188,28 @@ def test_cohere_is_the_backup():
         A.requests.post, A.COHERE_KEY, A.PRIMARY = real, key, "gemini"; A._DOWN_UNTIL.clear(); A._LAST_OK[0] = None
 
 
+def test_demo_script_steps():
+    # every saved demo answer passes the validator unchanged and finds products; the products the demo opens show up
+    import copy, demo_script as D
+    prev = {}
+    for step in D.SEARCHES:
+        it, notes = A.validate_intent(copy.deepcopy(step["answer"]))
+        assert notes == [], (step["id"], notes)
+        if step["prev"]:
+            it, _ = A.merge_followup(it, prev[step["prev"]])
+        if not it["hard"].get("gender") and not it.get("clarify"):
+            it["hard"]["gender"] = "women"   # Priya
+        it, _ = A.enrich(it)
+        prev[step["id"]] = it
+        ids = [p["id"] for p, _ in A.search(it, max_results=8)[0]]
+        assert ids, step["id"]
+        if step["id"] == "mumbai": assert "Y10188713" in ids          # the Naari kurta the demo opens
+        if step["id"] == "jaipur_layer": assert "Y10260187" in ids    # the Alcis sweatshirt added in S at checkout
+        if step["id"] == "jaipur_jan": assert it["soft"].get("layer_tip")
+    assert D.find("tshirts and i am going in january", "jaipur")["id"] == "jaipur_jan" and D.find("tshirts in january") is None
+    assert D.answer("Y10188713", "is this see through?") and D.answer("Y10188713", "Is it see-through?")
+
+
 def test_weather_comes_from_the_ai():
     # weather is the AI's own estimate for the place and month (no lookup table), and which fabrics suit it is the AI's call
     # too: code never adds fabrics, it only ranks warm layers first when it's cold and keeps a named product with a tip

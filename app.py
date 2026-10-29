@@ -1,4 +1,4 @@
-import os, re, sys, time, html, json, collections, importlib, zlib, hashlib, hmac, uuid, datetime
+import os, re, sys, time, html, json, copy, collections, importlib, zlib, hashlib, hmac, uuid, datetime
 import streamlit as st
 
 # When new code is deployed, Streamlit unloads changed modules while other sessions may be importing them, which can
@@ -8,11 +8,12 @@ for _attempt in range(5):
         from catalog import PRODUCTS, SIZE_ORDER, WAIST_ORDER, ANCHOR_BRANDS, BREATHABLE, CATALOG_SOURCE
         import agent as A
         from ui import CSS, DARK_CSS, image_block, price_block
+        import demo_script as D
         break
     except KeyError:
         if _attempt == 4:
             raise
-        for _m in ("catalog", "prompt", "agent", "ui"):
+        for _m in ("catalog", "prompt", "agent", "ui", "demo_script"):
             sys.modules.pop(_m, None)
         importlib.invalidate_caches()
         time.sleep(0.3)
@@ -54,7 +55,8 @@ S.setdefault("result", None)
 S.setdefault("pid", None)
 S.setdefault("removed_chips", [])
 S.setdefault("last_results", [])
-TABS = ["🏠 Shop", "📖 Tutorial", "🧪 Test cases", "🧠 AI trace", "📊 Metrics", "🔐 Admin"]
+TABS = ["🏠 Shop", "🎬 Demo", "📖 Tutorial", "🧪 Test cases", "🧠 AI trace", "📊 Metrics", "🔐 Admin"]
+SHOP, DEMO, TUTORIAL_TAB, TESTS, TRACE, METRICS, ADMIN = TABS
 S.setdefault("tab", TABS[0])
 S.setdefault("last_tab", TABS[0])
 S.setdefault("home_n", 24)
@@ -129,6 +131,20 @@ def _intent_cache():
 @st.cache_resource
 def _qa_cache():
     return _load_prerun()[1]
+
+
+@st.cache_resource
+def _demo_settings():
+    """Server-wide: whether the demo script's saved answers are used (Admin → Demo answers)."""
+    return {"on": True}
+
+
+def demo_preset(q, followup):
+    """The demo script's saved answer for this search, if demo answers are on and it is a step of the script."""
+    if not _demo_settings()["on"]:
+        return None
+    prev = S.get("demo_step") if followup else None
+    return (D.find(q, prev) if prev else None) or D.find(q)
 
 
 def cached_understand(query, history, _key, models, previous=""):
@@ -262,7 +278,11 @@ def run_search(q, followup=False, exact=False):
     A.set_log_tag(f"{S.sid}-{S.search_seq}")   # Gemini calls made during this search carry this id (admin tab)
     S.removed_chips = []
     q_in = resolve_followup(q) if followup else q
+    preset = None if exact else demo_preset(q, followup)
+    S.demo_step = preset["id"] if preset else None
     r = A.route(q_in if followup else q, ai=AI_ON)
+    if preset:   # a step of the demo script: AI mode with its saved answer
+        r = dict(stage="agent", label="AI mode", query=q_in, fixes=[], reason="Demo script step: the agent's saved answer is used")
     if exact:   # one-tap undo: search the shopper's exact words, no corrections, no AI
         r = dict(stage=0, label="Undo: your exact words", query=q, fixes=[], reason="Searching your exact words, without spelling fixes")
     if followup and r["stage"] in (0, 2):
@@ -300,8 +320,14 @@ def run_search(q, followup=False, exact=False):
             prev = {"hard": {"gender": kf.get("gender"), "types": [t for t, _ in kf.get("types", [])], "size": kf.get("size")},
                     "soft": {"colours": [c for c, _ in kf.get("colours", [])]}}
         t_ai = time.time()
-        intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS),
-                                               json.dumps(prev, ensure_ascii=False, default=str) if prev else "")
+        if preset:
+            intent, notes = A.validate_intent(copy.deepcopy(preset["answer"]))
+            model = "demo script"
+            log = [f"demo script: saved answer for step “{preset['id']}” (no model call)",
+                   "validator: " + ("; ".join(notes) if notes else "all values valid")]
+        else:
+            intent, model, log = cached_understand(r["query"], hist, API_KEY, tuple(MODELS),
+                                                   json.dumps(prev, ensure_ascii=False, default=str) if prev else "")
         res.update(t_ai=time.time() - t_ai, model=model, ai_log=log)
         res["steps"].append(("Intent & constraints", f"model: {model}", "; ".join(l for l in log if not l.startswith("validator:"))
                              + ("; previous search's constraints passed as context" if prev else "")))
@@ -331,7 +357,8 @@ def run_search(q, followup=False, exact=False):
             intent, kept = A.merge_followup(intent, prev)
             res["steps"].append(("Memory", "merge_followup()", "kept from your previous search: " + (", ".join(kept) or "nothing (new search)")))
         h = intent.setdefault("hard", {})
-        if not h.get("gender") and h.get("category", "fashion") in (None, "fashion") and S.profile.get("gender"):
+        asks_gender = {"men", "women"} <= {o.lower() for o in (intent.get("clarify") or {}).get("options", [])}
+        if not h.get("gender") and h.get("category", "fashion") in (None, "fashion") and S.profile.get("gender") and not asks_gender:
             h["gender"] = S.profile["gender"]
             res["steps"].append(("Profile", "shopping_for", f"gender = {h['gender']} (from account)"))
         intent, calls = A.enrich(intent)
@@ -638,12 +665,20 @@ with st.sidebar:
         st.caption("Demo order history (illustrative).")
 
     # photo of a size tag, bill or label -> brand + size + product, read by Gemini vision
-    with st.expander("📷 Read a size tag, bill or label"):
+    with st.expander("📷 Read a size tag, bill or label", expanded=bool(S.get(f"sample_{k}"))):
         up = st.file_uploader("Photo", type=["png", "jpg", "jpeg", "webp"], key=f"up_{k}", label_visibility="collapsed")
-        if up is not None:
-            data = up.getvalue()
+        if up is None:
+            st.button("Try a sample size tag", key=f"sample_btn_{k}", use_container_width=True,
+                      on_click=lambda key=f"sample_{k}": S.__setitem__(key, not S.get(key)))
+        sample = up is None and S.get(f"sample_{k}")
+        if up is not None or sample:
+            data = up.getvalue() if up is not None else open(os.path.join(os.path.dirname(os.path.abspath(__file__)), D.SAMPLE_TAG), "rb").read()
             st.image(data, use_container_width=True)
-            d, model, log = cached_read_image(hashlib.md5(data).hexdigest(), data, up.type or "image/jpeg", API_KEY, tuple(MODELS))
+            digest = hashlib.md5(data).hexdigest()
+            if _demo_settings()["on"] and digest in D.PHOTOS:   # the demo's sample tag: its saved reading
+                d, model, log = dict(D.PHOTOS[digest]), "demo script", []
+            else:
+                d, model, log = cached_read_image(digest, data, up.type if up is not None else "image/png", API_KEY, tuple(MODELS))
             if not d:
                 st.info("Reading photos needs AI mode (a Gemini or Cohere key)." if not AI_ON else "Couldn't read that photo: " + "; ".join(log)[:160])
             else:
@@ -681,10 +716,10 @@ if go and q.strip():
     run_search(q.strip())
     go_tab(TABS[0])
 
-n1, n2, n3, n4 = st.columns([5.6, 1.2, 1.1, 0.75], vertical_alignment="center")
+n1, n2, n3, n4 = st.columns([7.2, 0.85, 0.95, 0.8], vertical_alignment="center")
 with n1:
     st.segmented_control("Section", TABS, key="tab", on_change=_tab_changed, label_visibility="collapsed")
-n2.button("🏠 All products", use_container_width=True, key="home_top", on_click=go_home)
+n2.button("🏠 Home", use_container_width=True, key="home_top", on_click=go_home, help="All products")
 n3.button(f"🛒 Cart ({len(S.cart)})", use_container_width=True, key="cart_top", on_click=open_cart)
 def _toggle_theme():
     S.dark_mode = not S.dark_mode
@@ -724,13 +759,6 @@ TEST_CASES = [
     dict(name="No exact match", icon="⚖️", tag="Stage 5 · relax", query="chanderi lehenga for a day wedding under ₹6,000",
          tests="Verifier loop relaxing a soft constraint.",
          expect="No chanderi lehenga under ₹6,000, so fabric is relaxed while the budget is kept, and the app says so."),
-    dict(name="Lifestyle", icon="💡", tag="Non-fashion", query="minimal table lamp for a small reading corner, warm light, under 2500",
-         tests="Same agent on a home product.",
-         expect="A small warm-light lamp under ₹2,500; no size check because it is not clothing."),
-    dict(name="Skincare", icon="🧴", tag="Personal care",
-         query="fragrance-free moisturiser for oily acne-prone skin that sits well under sunscreen under 800",
-         tests="Needs-based constraints checked against product notes.",
-         expect="Only the oil-free, fragrance-free gel moisturiser passes every check."),
     dict(name="Order help", icon="📦", tag="Stage 6 · out of scope", query="where is my order",
          tests="Router spotting a non-search question.",
          expect="“This isn’t a search query”: no product search, redirected to Customer Care / help chat. "
@@ -805,9 +833,9 @@ TUTORIAL = [
          do="In the sidebar: set your usual size and brand (type it in if it's not listed), upload a photo of a size tag or bill, "
             "and open Past orders to “Shop similar”. 🌙 Dark in the top bar switches the theme.",
          look="Size badges and “Picked for you” update as soon as your profile changes."),
-    dict(icon="🧠", title="See behind the scenes", tab=3, button="Open the AI trace",
+    dict(icon="🧠", title="See behind the scenes", tab=TRACE, button="Open the AI trace",
          do="After any search, open 🧠 AI trace to see every step the AI took. 📊 Metrics shows the success measures, "
-            "and 🧪 Test cases runs ten ready-made shoppers.",
+            "and 🧪 Test cases runs eight ready-made shoppers; 🎬 Demo walks through the whole product.",
          look="How the request was understood, which checks ran, and what was relaxed when nothing matched exactly."),
 ]
 S.setdefault("tut_done", set())
@@ -819,7 +847,7 @@ def run_tutorial(i):
     if step.get("profile") in S.profiles:
         S.active_profile = step["profile"]; S.profile = S.profiles[step["profile"]]
     if step.get("tab"):
-        go_tab(TABS[step["tab"]]); return
+        go_tab(step["tab"]); return
     if step.get("home"):
         go_home(); return
     S.history, S.last_results = [], []   # each step starts a fresh conversation
@@ -853,6 +881,200 @@ def view_tutorial():
                             f'<div class="tc-l">Look for</div><div class="tc-t">{html.escape(step["look"])}</div>', unsafe_allow_html=True)
                 st.button("▶ " + step.get("button", "Try it"), key=f"tut{i}", use_container_width=True,
                           type="secondary" if i in S.tut_done else "primary", on_click=run_tutorial, args=(i,))
+
+# ------------------------------------------------------------------ demo (the finals script, one click per step)
+# Each step runs one part of the flow and says what to point out; **text** is highlighted. Search steps use the demo
+# script's saved answers (demo_script.py) when Admin → Demo answers is on, so the demo comes out the same every time.
+KURTA, SWEATSHIRT = "Y10188713", "Y10260187"   # Naari beige floral kurta (Mumbai search) · Alcis hooded sweatshirt (warm layer)
+DEMO_STEPS = [
+    # ---- profile panel
+    dict(sec="1 · Profile panel", icon="👤", title="Who are we shopping for?", act="start",
+         say="Open the left sidebar. One account, several shoppers: each profile keeps its own sizes, past orders and suggestions.",
+         point=["**Profile menu**: Priya, Ananya and Rohan come with past orders; **➕ New profile** adds Mom, a partner…",
+                "The home page says **“Picked for Priya”**: suggestions follow her orders and what she browses",
+                "A men's profile only sees men's fashion"]),
+    dict(sec="1 · Profile panel", icon="📏", title="Fit profile: size, waist, brand", act="home",
+         say="Walk down the Fit profile: this is what sizes every product, whichever way you search.",
+         point=["**Usual top size** and **usual waist** for jeans",
+                "**Brand that fits you best**: pick Zara and it says **“Zara runs small: Zara M ≈ our S”** (type any brand that isn't listed)",
+                "**“Your returns count too”**: Priya returned a kurta in S as too small, so kurtas start one size up",
+                "**🧾 Past orders**: “Fits me: use size” or “Shop similar” · **📏 Size chart**"]),
+    dict(sec="1 · Profile panel", icon="📷", title="Photo of a size tag", act="photo",
+         say="Instead of typing sizes, snap a size tag, a bill or a label. Here's a sample tag (you can upload any photo too).",
+         point=["The AI reads **brand, size and product** from the photo",
+                "**“Use as my size”** sets it as the size that fits you · **“Search this”** shops the same item",
+                "A photo you upload goes to the AI live; the sample tag uses a saved reading"]),
+    # ---- search
+    dict(sec="2 · Search", icon="🏜️", title="Outfits for Jaipur", act="search", q="Outfits for Jaipur", fresh=True,
+         say="Type a trip, not a product. No month given, so the AI assumes this month.",
+         point=["The AI works out **Jaipur in October is warm**, so it adds **Fabric: cotton, linen**",
+                "The bubble: **You typed → I understood → So I'm showing**",
+                "Every filter is a chip you can remove"]),
+    dict(sec="2 · Search", icon="🧥", title="Refine: “tshirts & I am going in January”", act="search", q="tshirts & I am going in January",
+         follow=True, after="jaipur",
+         say="Refine in the same conversation: only what you said changes.",
+         point=["Keeps Jaipur, adds **Item: T-shirt**",
+                "January is **cold** (about 9°C at night), so **Fabric changes to fleece, wool, acrylic** and **long sleeves**",
+                "**Heads-up** in the bubble and a one-tap **“Add a warm layer: jackets & sweatshirts”**"]),
+    dict(sec="2 · Search", icon="➕", title="Tap “Add a warm layer”", act="search", q="Add a warm layer: jackets & sweatshirts",
+         follow=True, after="jaipur_jan",
+         say="One tap turns the tip into a search for the layer.",
+         point=["Sweatshirts, jackets and sweaters in **warm fabrics** for Jaipur in January",
+                "The **Alcis black & charcoal hooded sweatshirt** says **“L recommended · runs small”**: we'll use it at checkout"]),
+    dict(sec="2 · Search", icon="🏝️", title="Maldives Outfits", act="search", q="Maldives Outfits", fresh=True,
+         say="A new trip: beachwear, without saying beach.",
+         point=["**Hot and humid** beach weather: **breathable fabrics** and **bright colours**"]),
+    dict(sec="2 · Search", icon="🌸", title="Refine: “vlue tops with flower under 700”", act="search", q="vlue tops with flower under 700",
+         follow=True, after="maldives",
+         say="Typo and all, on purpose.",
+         point=["**“vlue” → blue** fixed without asking", "**“with flower” → Print: Floral** filter",
+                "**Under ₹700**, and the Maldives context is kept", "Every result is a **blue floral top under ₹700**"]),
+    dict(sec="2 · Search", icon="💍", title="Marriage outfits (ambiguous)", act="search", q="Marriage outfits", fresh=True,
+         say="Too vague to guess: ethnic and western give completely different results.",
+         point=["Stage **4 · Ambiguous**: it asks **one quick question** instead of guessing",
+                "**Ethnic · Western · Show both**, one tap each"]),
+    dict(sec="2 · Search", icon="🪔", title="Tap “Ethnic”", act="search", q="Marriage outfits — Ethnic",
+         say="Answer with one tap.", point=["**Style: Ethnic** + **Occasion: Wedding**"]),
+    dict(sec="2 · Search", icon="✨", title="Refine: “dark shades which go with gold”", act="search", q="dark shades which go with gold",
+         follow=True, after="marriage_ethnic",
+         say="Subjective words become filters.",
+         point=["**Colours: Dark** and **Pairs with: Gold**", "Still ethnic, still for a wedding"]),
+    dict(sec="2 · Search", icon="🙋", title="Outfits for Jaggu", act="search", q="outfits for jaggu", fresh=True,
+         say="Shopping for someone else, by name.",
+         point=["“Jaggu” is a name, so it asks **“Is Jaggu a man or a woman?”**",
+                "It **doesn't assume** Priya's own gender while it asks"]),
+    dict(sec="2 · Search", icon="👔", title="Tap “Men”", act="search", q="outfits for jaggu — Men",
+         say="One tap.", point=["**Gender: Men**: men's outfits for Jaggu"]),
+    dict(sec="2 · Search", icon="📄", title="The case brief, word for word", act="search", q=PROBLEM_QUERY, fresh=True,
+         say="The exact query from the case brief. Myntra's search returns “No results” for it.",
+         point=["Every constraint becomes a chip: **Ethnic · Budget under ₹6,000 · Pastel · breathable fabrics · Wedding · Daytime · Pairs with silver**",
+                "**Mumbai is humid** (AI weather estimate) → breathable fabrics", "**A size on every card**"]),
+    # ---- product
+    dict(sec="3 · Viewing a product", icon="👗", title="Open the Naari beige kurta", act="open", pid=KURTA,
+         say="Open result #7 from the case-brief search.",
+         point=["**M recommended**, and why: **usual size M; reviews say it runs large; you returned a kurta in S for being too small, so M**",
+                "It connects the size to **Priya's past purchases**, not just a size chart"]),
+    dict(sec="3 · Viewing a product", icon="💬", title="Ask: “Is this see-through?”", act="ask", pid=KURTA, question="Is this see-through?",
+         say="Ask the product directly, in the product page.",
+         point=["The answer uses **only this listing**: it says when the listing doesn't tell us, and what to do about it"]),
+    dict(sec="3 · Viewing a product", icon="🧩", title="Complete the look", act="open", pid=KURTA,
+         say="Scroll to the bottom of the product page.",
+         point=["**👗 Complete the look**: pieces that go with it, matched by type, colour and budget"]),
+    # ---- cart
+    dict(sec="4 · Add to cart", icon="🛍️", title="Add the kurta to the cart", act="add", pid=KURTA, size="M",
+         say="Add it in the recommended size.",
+         point=["**“Added to your cart”**, then right away **what goes well with it**"]),
+    dict(sec="4 · Add to cart", icon="⚠️", title="Add the Alcis sweatshirt in S → size check", act="cart", pid=SWEATSHIRT, size="S",
+         say="Now add the sweatshirt from the warm-layer search in the wrong size, and open the cart.",
+         point=["Before checkout: **“you picked S, but runs small, so size up to L. Switch to L?”**",
+                "**One tap: Switch to L**: a return avoided before it happens"]),
+]
+
+
+def _hl(text):
+    return re.sub(r"\*\*(.+?)\*\*", r"<mark>\1</mark>", html.escape(text))
+
+
+def _reset_priya():
+    """Back to Priya as she starts the demo: her sizes, past orders and an empty cart."""
+    S.profiles["Priya"] = seed_profiles()["Priya"]
+    for key in [k for k in list(S.keys()) if re.match(r"^(us|wa|ab|abt|as|gd|pb|other|sample|up)_Priya($|_)", str(k))]:
+        del S[key]
+    S.active_profile = "Priya"; S.profile = S.profiles["Priya"]
+    S.cart, S.history, S.last_results, S.qa, S.just_added = [], [], [], {}, None
+
+
+def _demo_search(q, follow):
+    run_search(q, followup=follow)
+    S.q = q if not follow else S.get("q", "")
+
+
+def _step_answer(step):
+    """Which saved answer a search step uses."""
+    if step["act"] != "search": return None
+    return ((D.find(step["q"], step.get("after")) if step.get("after") else None) or D.find(step["q"]) or {}).get("id")
+
+
+def demo_run(i):
+    """Run step i of the demo (and the search it builds on, if that isn't on screen) and show it in Shop."""
+    step = DEMO_STEPS[i]
+    S.demo_i = i
+    if step["act"] == "start":
+        _reset_priya(); go_home(); S.demo_i = i; return
+    if step["act"] == "home":
+        go_home(); S.demo_i = i; return
+    if step["act"] == "photo":
+        S["sample_Priya"] = True; go_home(); S.demo_i = i; return
+    need = step.get("after") if step["act"] == "search" else None
+    if need and S.get("demo_step") != need:   # a refine needs the search it refines on screen: run that first
+        demo_run(next(k for k, x in enumerate(DEMO_STEPS) if _step_answer(x) == need)); S.demo_i = i
+    if step["act"] == "search":
+        if step.get("fresh"):
+            S.history, S.last_results = [], []
+        _demo_search(step["q"], step.get("follow", False))
+    elif step["act"] in ("open", "ask"):
+        S.pid, S.view, S.just_added = step["pid"], "product", None
+        if step["act"] == "ask":
+            _ask(PRODUCTS[step["pid"]], step["question"])
+    elif step["act"] == "add":
+        add_to_cart(PRODUCTS[step["pid"]], step["size"]); S.pid, S.view = step["pid"], "product"
+    elif step["act"] == "cart":
+        S.cart.append(dict(id=step["pid"], size=step["size"])); record_add(PRODUCTS[step["pid"]], step["size"], None)
+        S.view = "cart"
+    go_tab(SHOP)
+
+
+def demo_end():
+    S.demo_i = None
+
+
+def demo_strip():
+    """Presenter notes for the current step, at the top of the Shop page, with Back / Next."""
+    i = S.get("demo_i")
+    if i is None:
+        return
+    step = DEMO_STEPS[i]
+    bullets = "".join(f"<li>{_hl(b)}</li>" for b in step["point"])
+    st.markdown(f'<div class="demo-strip"><div class="ds-top">🎬 Demo · {html.escape(step["sec"])} · step {i + 1} of {len(DEMO_STEPS)}</div>'
+                f'<div class="ds-title">{step["icon"]} {html.escape(step["title"])}</div>'
+                f'<div class="ds-say">{_hl(step["say"])}</div><ul>{bullets}</ul></div>', unsafe_allow_html=True)
+    b0, b1, b2, _ = st.columns([1, 1.6, 1, 4])
+    b0.button("◀ Back", key="demo_prev", use_container_width=True, disabled=i == 0, on_click=demo_run, args=(max(0, i - 1),))
+    if i + 1 < len(DEMO_STEPS):
+        b1.button(f"Next: {DEMO_STEPS[i + 1]['title'][:28]} ▶", key="demo_next", type="primary", use_container_width=True,
+                  on_click=demo_run, args=(i + 1,))
+    else:
+        b1.button("✓ Finish demo", key="demo_done", type="primary", use_container_width=True, on_click=demo_end)
+    b2.button("✕ Hide notes", key="demo_hide", use_container_width=True, on_click=demo_end)
+
+
+def view_demo():
+    on = _demo_settings()["on"]
+    st.markdown('<div class="tc-intro"><b>🎬 Demo</b> · the finals walkthrough, in order: <b>profile panel → search → viewing a product → '
+                'add to cart</b>. <b>▶ Run</b> does the step in 🏠 Shop and shows presenter notes on top of the page (what to say, '
+                '<mark>what to point out</mark>), with <b>Next ▶</b> for the following step. You can also type the same words '
+                'yourself in the search and refine bars.</div>', unsafe_allow_html=True)
+    c1, c2, _ = st.columns([1.4, 3.2, 2])
+    c1.button("▶ Start from step 1", type="primary", use_container_width=True, on_click=demo_run, args=(0,))
+    c2.caption(("✓ Demo answers are on: the script's searches use saved answers, so they're instant and the same every time "
+                "(the AI trace says “demo script”). Anything off-script goes to the live AI." if on else
+                "Demo answers are off (Admin): every search goes to the live AI.") + " Step 1 resets Priya and empties the cart.")
+    sec = None
+    for i, step in enumerate(DEMO_STEPS):
+        if step["sec"] != sec:
+            sec = step["sec"]
+            st.markdown(f'<div class="demo-sec">{html.escape(sec)}</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            a, b = st.columns([5, 1.1], vertical_alignment="center")
+            q = f'<div class="tc-q">“{html.escape(step["q"])}”' + (" <i>(refine bar)</i>" if step.get("follow") else "") + "</div>" if step.get("q") else ""
+            now = " · <b>on screen now</b>" if S.get("demo_i") == i else ""
+            a.markdown(f'<div class="tc-head"><span class="tc-ic">{step["icon"]}</span><div><span class="tc-tag">Step {i + 1}{now}</span>'
+                       f'<div class="tc-name">{html.escape(step["title"])}</div></div></div>{q}'
+                       f'<div class="tc-t">{_hl(step["say"])}</div><div class="tc-t">' + " · ".join(_hl(b) for b in step["point"]) + "</div>",
+                       unsafe_allow_html=True)
+            b.button("▶ Run", key=f"demo{i}", use_container_width=True, type="primary" if S.get("demo_i") != i else "secondary",
+                     on_click=demo_run, args=(i,))
+
 
 # ------------------------------------------------------------------ metrics (solution doc: impact, KPIs)
 def view_metrics():
@@ -1107,6 +1329,15 @@ def _run_prerun():
     S.prerun_json = _save_prerun()
 
 
+def _demo_answers_panel():
+    st.markdown('<div class="layer">🎬 Demo answers</div>', unsafe_allow_html=True)
+    st.toggle("Use the demo script's saved answers", value=_demo_settings()["on"], key="adm_demo_on",
+              on_change=lambda: _demo_settings().__setitem__("on", S.adm_demo_on),
+              help="On: the searches, product question and sample photo in the 🎬 Demo tab use saved answers (instant, same "
+                   "every time; the AI trace says “demo script”). Off: everything goes to the live AI. Applies to all visitors.")
+    st.caption(f"{len(D.SEARCHES)} saved searches, {len(D.QA)} product answers, {len(D.PHOTOS)} photo. Anything off-script uses the live AI.")
+
+
 def _cohere_test_panel():
     """Send one search straight to the Cohere backup (skipping Gemini) to check the key, the model and the schema."""
     st.markdown('<div class="layer">🧪 Test the Cohere backup</div>', unsafe_allow_html=True)
@@ -1243,6 +1474,7 @@ def view_admin():
     else:
         st.info("No searches yet.")
 
+    _demo_answers_panel()
     _cohere_test_panel()
     _prerun_panel()
 
@@ -1320,15 +1552,15 @@ def product_card(p, i=None, checks=None, intent=None, numbered=True, highlight=F
                     f'<div class="foot">{fit_badge(p)}<br>{risky_note(p)}{ck}</div>', unsafe_allow_html=True)
         b1, b2 = st.columns(2)
         if b1.button("View", key=f"v{p['id']}{i}", use_container_width=True):
-            S.pid, S.view = p["id"], "product"; st.rerun()
+            S.pid, S.view, S.just_added = p["id"], "product", None; st.rerun()
         if b2.button("Add", key=f"a{p['id']}{i}", use_container_width=True, type="primary"):
             fa = A.fit_agent(p, S.profile)
             if fa and (not fa["size"] or fa["confidence"] == "low"):   # never a confident guess: let the shopper pick
                 S.pid, S.view = p["id"], "product"
                 st.toast("We're not sure of your size for this one. Answer one question or check the size chart."); st.rerun()
             size = (fa or {}).get("size") or p["sizes"][min(2, len(p["sizes"]) - 1)]
-            S.cart.append(dict(id=p["id"], size=size)); record_add(p, size, fa)
-            st.toast(f"Added {p['name']} ({size})"); st.rerun()
+            add_to_cart(p, size)
+            S.pid, S.view = p["id"], "product"; st.rerun()   # the product page then shows what goes with it
 
 def grid(items, intent=None, ncols=4, numbered=True, highlight=False):
     for r0 in range(0, len(items), ncols):
@@ -1575,7 +1807,7 @@ def view_search():
     rc1, rc2 = st.columns([6, 1.1], vertical_alignment="center")
     mode = {"agent": "✦ AI mode", "help": "Customer support", "keyword": "Quick search"}[res["kind"]]
     rc1.markdown(f'<div class="router">{pill(stage)}<span class="friendly">{mode} · {res["t"]:.1f}s</span></div>', unsafe_allow_html=True)
-    rc2.button("🧠 AI trace", use_container_width=True, key="open_trace", on_click=go_tab, args=(TABS[3],))
+    rc2.button("🧠 AI trace", use_container_width=True, key="open_trace", on_click=go_tab, args=(TRACE,))
 
     # ---------------- not a search: support or something else
     if res["kind"] == "help":
@@ -1727,6 +1959,9 @@ PRODUCT_QUESTIONS = ["Is it see-through?", "Does it run small?", "Good for humid
 
 def cached_ask(p, q):
     """Product questions reuse a saved AI answer (from earlier visitors or the demo pre-run); fallback answers aren't saved."""
+    saved = D.answer(p["id"], q) if _demo_settings()["on"] else None
+    if saved:
+        return saved, "demo script · this listing's details"
     key = (p["id"], q.strip().lower())
     if key in _qa_cache() and A.provider(_qa_cache()[key][1]) == A.PRIMARY:
         return _qa_cache()[key]
@@ -1757,6 +1992,12 @@ def product_qa(p):
                     f'<div class="qa-s">Based on: {html.escape(src)}</div></div>', unsafe_allow_html=True)
     st.caption("Preview: answers use only this listing's details and the review notes we have. "
                "With full review data, answers will quote shoppers who bought it.")
+
+
+def add_to_cart(p, size):
+    S.cart.append(dict(id=p["id"], size=size)); record_add(p, size, A.fit_agent(p, S.profile))
+    S.just_added = p["id"]
+    st.toast("Added to cart")
 
 
 def view_product():
@@ -1812,11 +2053,16 @@ def view_product():
         idx = p["sizes"].index(rec) if rec in p["sizes"] else (None if low else 0)
         size = st.radio("Size", p["sizes"], index=idx, horizontal=True, key=f"sz{p['id']}{rec}")   # resets when the recommendation changes
         if st.button("Add to cart", type="primary", disabled=size is None, help="Pick a size first" if size is None else None):
-            S.cart.append(dict(id=p["id"], size=size)); record_add(p, size, fa)
-            st.toast("Added to cart"); st.rerun()
-    look = A.complete_look(p)
+            add_to_cart(p, size); st.rerun()
+        added = S.get("just_added") == p["id"]
+        look = A.complete_look(p)
+        if added:   # right after adding: what goes with it, before checkout
+            sz = next((c["size"] for c in reversed(S.cart) if c["id"] == p["id"]), "")
+            st.success(f"Added to your cart in size {sz}." + (" Pieces that go with it are just below 👇" if look else ""))
+            st.button(f"🛒 Go to cart ({len(S.cart)})", key="goto_cart", on_click=open_cart)
     if look:
-        st.markdown('<div class="layer">👗 Complete the look · preview</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="layer">👗 {"Goes well with what you just added" if added else "Complete the look"} · preview</div>',
+                    unsafe_allow_html=True)
         st.caption("Pieces that usually go with this, matched by type, colour and budget from this catalog. "
                    "Preview of the look builder on our roadmap; footwear and jewellery aren't in this catalog yet.")
         grid(look, numbered=False)
@@ -1862,15 +2108,18 @@ def view_cart():
         S.metrics["orders"] += 1; S.metrics["ordered_items"] += len(S.cart)
         st.balloons(); st.success("Order placed (demo). Fewer surprises, fewer returns.")
 
-if S.tab == TABS[1]:
+if S.tab == DEMO:
+    view_demo()
+elif S.tab == TUTORIAL_TAB:
     view_tutorial()
-elif S.tab == TABS[2]:
+elif S.tab == TESTS:
     view_tests()
-elif S.tab == TABS[3]:
+elif S.tab == TRACE:
     view_trace()
-elif S.tab == TABS[4]:
+elif S.tab == METRICS:
     view_metrics()
-elif S.tab == TABS[5]:
+elif S.tab == ADMIN:
     view_admin()
 else:
+    demo_strip()   # presenter notes for the current demo step, above the page they talk about
     {"search": view_search, "product": view_product, "cart": view_cart}[S.view]()

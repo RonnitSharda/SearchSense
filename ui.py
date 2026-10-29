@@ -128,6 +128,15 @@ TOP{border:1.5px solid #FFB3C6!important}
 .st-relax{border-top:3px solid var(--amber);background:var(--amberL)}
 .st-ask{border-top:3px solid #3B82F6;background:#F0F7FF}
 .ask{background:#F0F7FF;border:1px solid #CFE3FF;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-size:14.5px}
+.demo-strip{background:#FFF8E6;border:1.5px solid #F2C14E;border-radius:12px;padding:10px 16px 8px;margin:0 0 10px}
+.demo-strip .ds-top{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9A6B00}
+.demo-strip .ds-title{font-size:18px;font-weight:700;color:var(--ink);margin:2px 0 4px}
+.demo-strip .ds-say{font-size:14px;color:#4A4E63;margin-bottom:4px}
+.demo-strip ul{margin:2px 0 4px 18px;padding:0}
+.demo-strip li{font-size:14.5px;margin:2px 0}
+.demo-strip mark,.tc-t mark{background:#FFE08A;padding:0 3px;border-radius:3px}
+.demo-sec{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--pink);margin:18px 0 6px}
+.demo-now{outline:2.5px solid #F2C14E;border-radius:12px}
 
 /* refine (follow-up) bar under the bubble */
 .refine-l{font-weight:800;color:var(--pink);font-size:14px;white-space:nowrap}
