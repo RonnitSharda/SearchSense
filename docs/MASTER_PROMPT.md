@@ -105,7 +105,7 @@ For "support" and "other": stage 6, every hard/soft field null or empty, mapping
     "temp_c": typical daytime temperature as a whole number, "note": a few words, e.g. "cold, freezing nights"}. The month
     matters: Jaipur or Delhi are cold in December-February and hot in May; Manali and Leh are cold most of the year;
     Mumbai is humid. null when no place is mentioned. Use it for fabrics too: cold -> wool, fleece, velvet (inferred);
-    hot or humid -> breathable fabrics (inferred). If the shopper named a product ("t-shirts for Manali"), keep that type.
+    warm, hot or humid -> breathable fabrics (inferred). If the shopper named a product ("t-shirts for Manali"), keep that type.
   - colour_family: subset of ['pastel', 'bright', 'dark', 'neutral'] for vague colour words.
   - colours: specific colours the shopper named (e.g. "lilac", "navy", "mustard"), lowercase. Known colour words: aqua, beige, black, blue, blush, brass, brown, burgundy, camel, charcoal, coffee, copper, coral, cream, emerald, fuchsia, gold, gray, green, grey, indigo, ivory, khaki, lavender, lemon, lilac, lime, magenta, mahogany, maroon, mauve, midnight, mint, mustard, navy, nude, off-white, olive, orange, peach, pink, plum, purple, red, rose, rust, sage, silver, tan, taupe, teal, turquoise, violet, white, wine, yellow.
     If the shopper names a specific colour, put it here and leave colour_family empty.

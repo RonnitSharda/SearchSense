@@ -170,6 +170,8 @@ def test_weather_comes_from_the_ai():
     assert tees["soft"].get("layer_tip") and all(p["type"] == "t-shirt" for p, _ in A.search(tees)[0])
     hot, _ = intent([], {"climate": "hot", "temp_c": 34, "note": "hot and dry"}, city="jaipur")
     assert "linen" in hot["soft"]["fabrics"] and not hot["soft"].get("prefer_types")
+    warm, _ = intent([], {"climate": "warm", "temp_c": 32, "note": "warm daytime weather"}, city="jaipur")   # Jaipur in October
+    assert {"cotton", "linen"} <= set(warm["soft"]["fabrics"])
     none, calls = intent([], {"climate": "snowy"})   # an invalid estimate is dropped, not trusted
     assert none["soft"]["weather"] is None and none["soft"]["fabrics"] == [] and calls[0][2] == "not estimated"
 

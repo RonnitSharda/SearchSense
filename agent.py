@@ -642,7 +642,8 @@ def enrich(intent):
                       f"{w['note'] or w['climate']}{temp} in {when}" if w else "not estimated"))
     soft["climate"] = w["climate"] if w else None
     clothes = intent.get("hard", {}).get("category") in (None, "fashion")
-    if w and w["climate"] in ("humid", "hot") and not soft.get("fabric_named"):
+    hot = w and (w["climate"] in ("warm", "hot", "humid") or (w.get("temp_c") or 0) >= 27)   # 27°C+ calls for light fabrics
+    if hot and not soft.get("fabric_named"):
         soft["fabrics"] = sorted(set(soft.get("fabrics") or []) - WARM | BREATHABLE)
     if w and w["climate"] in ("cold", "cool") and clothes:
         if not soft.get("fabric_named"):   # warm fabrics replace any 'breathable' guess
