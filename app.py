@@ -99,22 +99,42 @@ def _started():
 _started()
 
 
+PRERUN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "demo_cache.json")
+
+
+def _load_prerun():
+    """Saved AI answers for the demo searches and product questions (see Admin → Pre-run demo), if the file exists."""
+    try:
+        with open(PRERUN_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return ({(q, tuple(h), prev): tuple(v) for q, h, prev, v in d.get("intents", [])},
+                {(pid, q): tuple(v) for pid, q, v in d.get("qa", [])})
+    except Exception:
+        return {}, {}
+
+
 @st.cache_resource
 def _intent_cache():
-    return {}
+    return _load_prerun()[0]
+
+
+@st.cache_resource
+def _qa_cache():
+    return _load_prerun()[1]
 
 
 def cached_understand(query, history, _key, models, previous=""):
-    """Identical queries reuse the agent's answer (saves quota and latency). Failures are never cached."""
+    """Identical queries reuse the agent's answer (saves quota and latency). Failures are never cached. The key is the words,
+    the previous search (for follow-ups) and nothing else, so answers saved by the demo pre-run are reused on stage."""
     import copy
-    cache, key = _intent_cache(), (query, history, models, previous)
+    cache, key = _intent_cache(), (query, history, previous)
     if key in cache:
         intent, model, log = copy.deepcopy(cache[key])
         return intent, model, log + ["served from cache"]
     with st.spinner("✦ AI mode is reading your request…"):
         out = A.understand(query, _key, list(models), list(history), json.loads(previous) if previous else None)
     if out[1] != "failed":
-        if len(cache) > 500: cache.clear()
+        if len(cache) > 2000: cache.clear()
         cache[key] = copy.deepcopy(out)
     return out
 
@@ -250,7 +270,7 @@ def run_search(q, followup=False, exact=False):
             r = res["route"] = dict(stage="agent", label="No keyword match: sent to agent", query=q, fixes=[],
                                     reason="Keyword search found nothing; the agent interprets the request")
     if r["stage"] == "agent":
-        hist = tuple(S.history) if followup else tuple()
+        hist = tuple(S.history[-1:]) if followup else tuple()   # a follow-up refines the previous search only
         prev = None
         if followup and S.result and S.result.get("kind") == "agent":
             prev = S.result.get("intent")
@@ -329,7 +349,7 @@ def record_search(res):
                                       conf=res.get("intent", {}).get("confidence")))
     items = [(p, checks) for p, checks in res["items"]] if res["kind"] == "agent" else [(PRODUCTS[i], []) for i in res.get("items") or []]
     _search_log().append(dict(
-        at=time.time(), sid=S.sid, tag=f"{S.sid}-{S.search_seq}", profile=S.active_profile, q=res["query"], kind=res["kind"],
+        at=time.time(), sid=S.sid, tag=f"{S.sid}-{S.search_seq}", profile=S.profile.get("name"), q=res["query"], kind=res["kind"],
         stage=S.metrics["searches"][-1]["stage"], t=res["t"], t_ai=res.get("t_ai"), n=n, model=res.get("model"),
         cached=any(l == "served from cache" for l in res.get("ai_log") or []), fallback=bool(res.get("fallback")),
         # the full record behind "View full log" in the admin tab
@@ -593,7 +613,15 @@ n4.button("☀️ Light" if S.dark_mode else "🌙 Dark", use_container_width=Tr
           help="Switch between light and dark mode", on_click=_toggle_theme)
 
 # ------------------------------------------------------------------ test cases (scripted personas)
+# the case brief's own example, word for word: the first thing to show (Myntra's search returns "No results" for it)
+PROBLEM_QUERY = ("I need a breathable, pastel ethnic outfit for a humid daytime wedding in Mumbai under ₹6,000 "
+                 "that pairs well with silver jewelry")
+
 TEST_CASES = [
+    dict(name="Case brief", icon="📄", tag="Stage 3 · the problem statement", query=PROBLEM_QUERY, profile="Priya",
+         tests="The exact query from the case brief: many constraints, subjective words, weather and occasion.",
+         expect="Breathable pastel ethnic outfits under ₹6,000 that suit silver jewellery, with Mumbai's humid weather and the "
+                "day-wedding rules in the trace, and a size on every card."),
     dict(name="Rohan", icon="⌨️", tag="Stage 2 · typo", query="wite linnen shirt M", profile="Rohan",
          tests="Spelling correction and a size in a short query.",
          expect="“wite linnen” is fixed to “white linen” without asking; shirts stocked in M; fit badge on every card."),
@@ -645,7 +673,7 @@ def run_case(case):
 
 
 def view_tests():
-    st.markdown('<div class="tc-intro"><b>Test cases</b> · nine scripted shoppers that exercise each part of the pipeline. '
+    st.markdown(f'<div class="tc-intro"><b>Test cases</b> · {len(TEST_CASES)} scripted shoppers that exercise each part of the pipeline. '
                 'Run one to see the results in 🏠 Shop; the 🧠 AI trace tab then shows every step the agent took.</div>', unsafe_allow_html=True)
     for r0 in range(0, len(TEST_CASES), 3):
         cols = st.columns(3)
@@ -696,7 +724,7 @@ TUTORIAL = [
          look="Size badges and “Picked for you” update as soon as your profile changes."),
     dict(icon="🧠", title="See behind the scenes", tab=3, button="Open the AI trace",
          do="After any search, open 🧠 AI trace to see every step the AI took. 📊 Metrics shows the success measures, "
-            "and 🧪 Test cases runs nine ready-made shoppers.",
+            "and 🧪 Test cases runs ten ready-made shoppers.",
          look="How the request was understood, which checks ran, and what was relaxed when nothing matched exactly."),
 ]
 S.setdefault("tut_done", set())
@@ -887,6 +915,131 @@ def _call_detail(c):
             st.code(A.SYSTEM, language="text", wrap_lines=True)
 
 
+# ------------------------------------------------------------------ demo pre-run (admin): answers ready before the jury watches
+# Each entry: (query, profile, extras). Extras: "chips" = also run its one-tap follow-ups, "qa" = the 4 preset product
+# questions on the top 2 results, "clarify" = each clarifying option, "follow" = typed follow-ups.
+PRERUN_PLAN = [
+    (PROBLEM_QUERY, "Priya", dict(chips=True, qa=True, follow=["#2 but cheaper", "same but in blue"])),
+    ("breathable pastel kurta for haldi under 2500", "Priya", dict(chips=True, qa=True, follow=["#2 but cheaper"])),
+    ("high-waist straight jeans for office", "Ananya", dict(chips=True, qa=True)),
+    ("I want clothes for my Jaipur trip in January", "Priya", dict(chips=True)),
+    ("Clothes for Manali", "Priya", dict(chips=True)),
+    ("tshirts for manali", "Rohan", dict(chips=True)),
+    ("outfit for a wedding", "Priya", dict(clarify=True)),
+    ("Vlue kurta", "Priya", {}), ("dress for club", "Priya", {}), ("Tshirt for gym and running", "Rohan", {}),
+    ("Return order", "Priya", {}),
+]
+
+
+def _prerun_plan():
+    """The demo plan plus every test case, tutorial step and popular search, without duplicates."""
+    plan, seen = list(PRERUN_PLAN), {q for q, _, _ in PRERUN_PLAN}
+    for c in TEST_CASES:
+        if c["query"] not in seen:
+            plan.append((c["query"], c.get("profile") or "Priya", dict(setup=c.get("setup")))); seen.add(c["query"])
+    for t in TUTORIAL:
+        if t.get("query") and t["query"] not in seen:
+            plan.append((t["query"], t.get("profile") or "Priya", dict(setup=t.get("setup")))); seen.add(t["query"])
+    for q in SUGGESTIONS:
+        if q not in seen:
+            plan.append((q, "Priya", {})); seen.add(q)
+    return plan
+
+
+def _save_prerun():
+    data = {"saved": datetime.datetime.now(IST).isoformat(timespec="minutes"), "models": MODELS,
+            "intents": [[q, list(h), prev, list(v)] for (q, h, prev), v in _intent_cache().items()],
+            "qa": [[pid, q, list(v)] for (pid, q), v in _qa_cache().items()]}
+    txt = json.dumps(data, ensure_ascii=False, default=str)
+    try:
+        with open(PRERUN_FILE, "w", encoding="utf-8") as f:
+            f.write(txt)
+    except OSError:
+        pass   # read-only disk: the download button still has it
+    return txt
+
+
+def _run_prerun():
+    """Run every demo search, follow-up and product question once, pacing calls for the free tier's per-minute limit."""
+    import copy
+    keep = {k: copy.deepcopy(S[k]) for k in ("result", "history", "last_results", "view", "metrics", "profiles", "qa") if k in S}
+    keep_profile = S.active_profile
+    plan, rows = _prerun_plan(), []
+    bar = st.progress(0.0, text="Starting…")
+
+    def one(q, profile, followup=False):
+        S.profile = S.profiles[profile]
+        n0, t0 = len(A.CALL_LOG), time.time()
+        run_search(q, followup=followup)
+        res = S.result
+        called = len(A.CALL_LOG) > n0
+        rows.append({"Query": q, "Profile": profile, "Path": res["kind"], "Model": res.get("model") or "",
+                     "AI call": "yes" if called else "saved / not needed", "Seconds": round(time.time() - t0, 1),
+                     "OK": "✅" if res.get("model") != "failed" and not res.get("fallback") else "❌ (safety net)"})
+        if called:
+            time.sleep(4.5)   # free tier: about 15 calls a minute
+        return res
+
+    def products(res):
+        return [p for p, _ in res["items"]] if res["kind"] == "agent" else [PRODUCTS[i] for i in res.get("items") or []]
+
+    for n, (q, profile, ex) in enumerate(plan):
+        bar.progress(n / len(plan), text=f"{n + 1}/{len(plan)} · {q[:70]}")
+        S.history, S.last_results, S.result = [], [], None   # each scenario starts fresh, like the Test cases
+        if ex.get("setup"):
+            one(ex["setup"], profile)
+            one(q, profile, followup=True)
+            continue
+        res = one(q, profile)
+        base = {k: copy.deepcopy(S[k]) for k in ("result", "history", "last_results")}
+        follow = list(ex.get("follow", []))
+        if ex.get("chips"):
+            follow += _quick_refines(res, products(res))
+        for f in follow:
+            for k, v in base.items(): S[k] = copy.deepcopy(v)
+            one(f, profile, followup=True)
+        cl = (res.get("intent") or {}).get("clarify")
+        if ex.get("clarify") and cl:
+            for o in cl["options"]:
+                for k, v in base.items(): S[k] = copy.deepcopy(v)
+                one(f"{res['query']} — {o}", profile)
+        if ex.get("qa") and API_KEY:
+            for p in products(res)[:2]:
+                for pq in PRODUCT_QUESTIONS:
+                    n0 = len(A.CALL_LOG)
+                    cached_ask(p, pq)
+                    if len(A.CALL_LOG) > n0:
+                        time.sleep(4.5)
+                rows.append({"Query": f"Ask about “{p['name'][:40]}”", "Profile": profile, "Path": "product questions",
+                             "Model": "", "AI call": f"{len(PRODUCT_QUESTIONS)} questions", "Seconds": None, "OK": "✅"})
+    bar.progress(1.0, text="Done")
+    for k, v in keep.items(): S[k] = v
+    S.profile = S.profiles[keep_profile]
+    S.prerun_rows = rows
+    S.prerun_json = _save_prerun()
+
+
+def _prerun_panel():
+    st.markdown('<div class="layer">⚡ Demo pre-run · make the demo searches instant</div>', unsafe_allow_html=True)
+    plan = _prerun_plan()
+    st.caption(f"Runs {len(plan)} demo searches once (the case-brief query, must-show scenarios, every test case, tutorial step "
+               "and popular search), plus their one-tap follow-ups, clarifying options and the preset product questions, and "
+               f"saves the AI's answers. Searches typed with the same words are then instant on stage. Saved answers now: "
+               f"{len(_intent_cache())} searches, {len(_qa_cache())} product answers. Takes about 5–10 minutes on the free tier "
+               "(calls are paced to its per-minute limit). Tip: put the model that answers fastest first in GEMINI_MODELS.")
+    c1, c2, _ = st.columns([1.4, 1.6, 3])
+    go = c1.button("⚡ Pre-run demo", type="primary", use_container_width=True, disabled=not API_KEY,
+                   help=None if API_KEY else "Needs GEMINI_API_KEY")
+    c2.download_button("⬇️ Download saved answers", S.get("prerun_json") or _save_prerun(), file_name="demo_cache.json",
+                       mime="application/json", use_container_width=True,
+                       help="Commit this file as data/demo_cache.json so the answers load on every restart")
+    if go:
+        _run_prerun()
+        st.success("Pre-run finished. Download the saved answers and send them over to commit, so they survive a restart.")
+    if S.get("prerun_rows"):
+        st.dataframe(S.prerun_rows, hide_index=True, use_container_width=True)
+
+
 def _admin_clear():
     A.CALL_LOG.clear(); _search_log().clear()
 
@@ -966,6 +1119,8 @@ def view_admin():
             _search_detail(list(reversed(searches))[pick[0]])
     else:
         st.info("No searches yet.")
+
+    _prerun_panel()
 
     with st.expander("Configuration"):
         st.markdown(f"- **Catalog:** {html.escape(CATALOG_SOURCE)} · {len(PRODUCTS):,} products\n"
@@ -1444,8 +1599,19 @@ def view_search():
 PRODUCT_QUESTIONS = ["Is it see-through?", "Does it run small?", "Good for humid weather?", "How do I wash it?"]
 
 
-def _ask(p, q):
+def cached_ask(p, q):
+    """Product questions reuse a saved AI answer (from earlier visitors or the demo pre-run); fallback answers aren't saved."""
+    key = (p["id"], q.strip().lower())
+    if key in _qa_cache():
+        return _qa_cache()[key]
     ans, src = A.ask_product(p, q, API_KEY, MODELS)
+    if API_KEY and not src.startswith("listing"):
+        _qa_cache()[key] = (ans, src)
+    return ans, src
+
+
+def _ask(p, q):
+    ans, src = cached_ask(p, q)
     S.setdefault("qa", {}).setdefault(p["id"], []).append((q, ans, src))
 
 
