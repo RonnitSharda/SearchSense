@@ -329,9 +329,9 @@ _LAST_OK, _DOWN_UNTIL = [None], {}
 
 def model_order(models):
     """Last model that answered first; models that failed recently go last (never dropped: a slow answer beats none).
-    The Cohere backup stays behind every working Gemini model, even after it answered while Gemini was down."""
+    The backup provider stays behind every working model of the primary one, even after it answered while that was down."""
     now = time.time()
-    return sorted(models, key=lambda m: (_DOWN_UNTIL.get(m, 0) > now, is_cohere(m), m != _LAST_OK[0]))
+    return sorted(models, key=lambda m: (_DOWN_UNTIL.get(m, 0) > now, provider(m) != PRIMARY, m != _LAST_OK[0]))
 
 
 def _post_logged(purpose, model, url, body, headers=None):
@@ -353,8 +353,10 @@ def _post_logged(purpose, model, url, body, headers=None):
 
 
 # ------------------------------------------------------------------ providers
-# Gemini is the main model. Cohere's Command A is the backup, tried only when every Gemini model failed (quota, overload,
-# no answer). Model names starting "command" go to Cohere's Chat API v2 with its own key; same master prompt, same schema.
+# Gemini is the main model and Cohere's Command A the backup, tried only when every Gemini model failed (quota, overload,
+# no answer); PRIMARY swaps them (AI_PRIMARY secret, or the toggle in Admin). Model names starting "command" go to
+# Cohere's Chat API v2 with its own key; same master prompt, same schema.
+PRIMARY = "cohere" if (os.environ.get("AI_PRIMARY") or "").strip().lower() == "cohere" else "gemini"
 COHERE_KEY = os.environ.get("COHERE_API_KEY") or None
 COHERE_MODELS = [m.strip() for m in (os.environ.get("COHERE_MODELS") or "command-a-03-2025").split(",") if m.strip()]
 COHERE_VISION = "command-a-vision-07-2025"   # reads photos (size tags, labels)
@@ -365,14 +367,19 @@ def is_cohere(model):
     return model.startswith("command")
 
 
+def provider(model):
+    return "cohere" if is_cohere(model) else "gemini"
+
+
 def ai_available(api_key):
     return bool(api_key or COHERE_KEY)
 
 
 def with_backup(models, api_key):
-    """Models we can call: the Gemini ones if there is a Gemini key, then the Cohere backup if there is a Cohere key."""
-    out = [m for m in models if not is_cohere(m)] if api_key else []
-    return out + ([m for m in COHERE_MODELS if m not in out] if COHERE_KEY else [])
+    """Models we can call, primary provider first: the Gemini ones if there is a Gemini key, Cohere's if there is a Cohere key."""
+    gemini = [m for m in models if not is_cohere(m)] if api_key else []
+    cohere = list(COHERE_MODELS) if COHERE_KEY else []
+    return cohere + gemini if PRIMARY == "cohere" else gemini + cohere
 
 
 def _reply_text(model, j):

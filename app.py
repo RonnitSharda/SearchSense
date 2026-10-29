@@ -30,6 +30,9 @@ API_KEY = _secret("GEMINI_API_KEY")
 MODELS = [m.strip() for m in _secret("GEMINI_MODELS", "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash").split(",") if m.strip()]
 # Cohere (Command A) is the backup, tried after every Gemini model fails; it also works on its own without a Gemini key
 A.COHERE_KEY = _secret("COHERE_API_KEY") or None
+if not getattr(A, "_primary_set", False):   # the AI_PRIMARY secret sets the start; the Admin toggle changes it until a restart
+    A.PRIMARY = "cohere" if str(_secret("AI_PRIMARY") or "").strip().lower() == "cohere" else "gemini"
+    A._primary_set = True
 A.COHERE_MODELS = [m.strip() for m in (_secret("COHERE_MODELS") or ",".join(A.COHERE_MODELS)).split(",") if m.strip()]
 AI_ON = A.ai_available(API_KEY)
 ALL_MODELS = A.with_backup(MODELS, API_KEY) or MODELS   # in the order they are tried
@@ -133,7 +136,7 @@ def cached_understand(query, history, _key, models, previous=""):
     the previous search (for follow-ups) and nothing else, so answers saved by the demo pre-run are reused on stage."""
     import copy
     cache, key = _intent_cache(), (query, history, previous)
-    if key in cache:
+    if key in cache and A.provider(cache[key][1]) == A.PRIMARY:   # an answer from the other provider is asked again
         intent, model, log = copy.deepcopy(cache[key])
         return intent, model, log + ["served from cache"]
     with st.spinner("✦ AI mode is reading your request…"):
@@ -658,8 +661,10 @@ with st.sidebar:
 
     st.divider()
     show_trace = st.toggle("Show agent trace", value=True, help="Shows the trace under each search result. The 🧠 AI trace tab always has the full trace.")
-    st.markdown(f"**AI model:** {('Gemini (' + MODELS[0] + ')' if API_KEY else 'Cohere (' + A.COHERE_MODELS[0] + ')') if AI_ON else 'offline rules (no key set)'}"
-                + (f" · backup: Cohere ({A.COHERE_MODELS[0]})" if API_KEY and A.COHERE_KEY else ""))
+    _name = lambda m: ("Cohere (" if A.is_cohere(m) else "Gemini (") + m + ")"
+    _backup = next((m for m in ALL_MODELS if A.provider(m) != A.provider(ALL_MODELS[0])), None) if AI_ON else None
+    st.markdown(f"**AI model:** {_name(ALL_MODELS[0]) if AI_ON else 'offline rules (no key set)'}"
+                + (f" · backup: {_name(_backup)}" if _backup else ""))
     st.caption(f"Catalog: {CATALOG_SOURCE}. Titles, brands, prices and images are real Myntra listings; colour, fabric, occasion "
                "and style are inferred from the text, and sizes and fit signals are simulated for this demo.")
     st.divider()
@@ -1107,7 +1112,7 @@ def _cohere_test_panel():
     st.markdown('<div class="layer">🧪 Test the Cohere backup</div>', unsafe_allow_html=True)
     if not A.COHERE_KEY:
         st.caption("Off: add a COHERE_API_KEY secret to turn on the backup (optional COHERE_MODELS, default "
-                   f"{', '.join(A.COHERE_MODELS)}). Gemini stays first; Cohere is tried only when every Gemini model fails.")
+                   f"{', '.join(A.COHERE_MODELS)}). Then choose which AI goes first above; the other is the backup.")
         return
     st.caption(f"Sends this search to {A.COHERE_MODELS[0]} only, with the same master prompt and schema, and does not cache it. "
                "Each test uses 1 of the trial key's 1,000 calls a month.")
@@ -1178,14 +1183,21 @@ def view_admin():
     m[4].metric("AI calls ok / failed", f"{ok} / {len(calls) - ok}")
 
     st.markdown('<div class="layer">Models · tried in this order for every AI search</div>', unsafe_allow_html=True)
+    both = bool(API_KEY and A.COHERE_KEY)
+    st.radio("Which AI goes first", ["Gemini", "Cohere"], index=int(A.PRIMARY == "cohere"), horizontal=True, key="adm_primary",
+             disabled=not both, on_change=lambda: setattr(A, "PRIMARY", S.adm_primary.lower()),
+             help="The other one is the backup, tried only when every model of the first one fails. Applies to all visitors "
+                  "until the app restarts (set the AI_PRIMARY secret to keep it). Saved answers from the other AI are asked again.")
+    if not both:
+        st.caption("Needs both GEMINI_API_KEY and COHERE_API_KEY; with one key, that AI is used alone.")
     rows = []
-    for i, mdl in enumerate(ALL_MODELS + ([A.COHERE_VISION] if A.COHERE_KEY else [])):
+    for i, mdl in enumerate(A.model_order(A.with_backup(MODELS, API_KEY)) + ([A.COHERE_VISION] if A.COHERE_KEY else [])):
         mc = [c for c in calls if c["model"] == mdl]
         good = [c for c in mc if c["status"] == 200]
         bad = [c for c in mc if c["status"] != 200]
         secs = sorted(c["secs"] for c in good)
         think = [c["thinking_tokens"] for c in good if c.get("thinking_tokens")]
-        rows.append({"#": i + 1, "Model": mdl + (" (backup, photos)" if mdl == A.COHERE_VISION else " (backup)" if A.is_cohere(mdl) else ""), "Calls": len(mc), "OK": len(good), "Failed": len(bad),
+        rows.append({"#": i + 1, "Model": mdl + (" (photos)" if mdl == A.COHERE_VISION else "") + (" · backup" if A.provider(mdl) != A.PRIMARY else ""), "Calls": len(mc), "OK": len(good), "Failed": len(bad),
                      "Quota refusals (429)": sum(1 for c in bad if c["status"] == 429),
                      "Median time (s)": secs[len(secs) // 2] if secs else None,
                      "Avg thinking tokens": round(sum(think) / len(think)) if think else None,
@@ -1716,7 +1728,7 @@ PRODUCT_QUESTIONS = ["Is it see-through?", "Does it run small?", "Good for humid
 def cached_ask(p, q):
     """Product questions reuse a saved AI answer (from earlier visitors or the demo pre-run); fallback answers aren't saved."""
     key = (p["id"], q.strip().lower())
-    if key in _qa_cache():
+    if key in _qa_cache() and A.provider(_qa_cache()[key][1]) == A.PRIMARY:
         return _qa_cache()[key]
     ans, src = A.ask_product(p, q, API_KEY, MODELS)
     if AI_ON and not src.startswith("listing"):

@@ -181,8 +181,11 @@ def test_cohere_is_the_backup():
         A._DOWN_UNTIL.clear()
         assert A.model_order(A.with_backup(["gemini-x"], "key"))[0] == "gemini-x"           # and leads again once it's back
         assert A.with_backup(["gemini-x"], None) == A.COHERE_MODELS                          # Cohere alone also works
+        A.PRIMARY = "cohere"                                                                  # the Admin toggle
+        assert A.with_backup(["gemini-x"], "key") == A.COHERE_MODELS + ["gemini-x"]
+        assert A.model_order(A.with_backup(["gemini-x"], "key"))[0] == A.COHERE_MODELS[0]
     finally:
-        A.requests.post, A.COHERE_KEY = real, key; A._DOWN_UNTIL.clear(); A._LAST_OK[0] = None
+        A.requests.post, A.COHERE_KEY, A.PRIMARY = real, key, "gemini"; A._DOWN_UNTIL.clear(); A._LAST_OK[0] = None
 
 
 def test_weather_comes_from_the_ai():
